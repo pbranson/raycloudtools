@@ -56,6 +56,12 @@ void usage(int exit_code = 1)
   std::cout << "                     --estimator crossing  - for density styles: count hit rays' path to the voxel" << std::endl;
   std::cout << "                                             exit. Exact for few, discrete elements per voxel (small" << std::endl;
   std::cout << "                                             voxels). Default beer_lambert: path to hit (turbid medium)" << std::endl;
+  std::cout << "                     --estimator pooled    - beer_lambert pooled over a neighbourhood of voxels, and" << std::endl;
+  std::cout << "                                             corrected for the stems' (widened) cross-sections" << std::endl;
+  std::cout << "                     --pool_radius 0.05    - half-width (m) of the neighbourhood for --estimator pooled" << std::endl;
+  std::cout << "                                             and the stem occlusion correction" << std::endl;
+  std::cout << "                     --no_overlap_correction - with --stem_diameter: don't correct for stems hiding" << std::endl;
+  std::cout << "                                             each other (footprint overlap and within-voxel occlusion)" << std::endl;
   std::cout << "                     --no_flat_top         - for density styles: disable the flat canopy top model" << std::endl;
   std::cout << "                                             (designed for grass/crops, it biases uneven stems)" << std::endl;
   std::cout << "                     --min_bound x,y,z     - optional bounds of the region to render, otherwise" << std::endl;
@@ -71,15 +77,16 @@ int rayRender(int argc, char *argv[])
   ray::KeyChoice style({ "ends", "mean", "sum", "starts", "rays", "height", "density", "density_rgb" });
   ray::DoubleArgument pixel_width(0.0001, 1000.0), grid_width(0.01, 1000000.0), min_sin_zenith(0.0, 1.0);
   ray::KeyChoice density_model({ "spherical", "vertical_cylinder" });
-  ray::KeyChoice estimator({ "beer_lambert", "crossing" });
+  ray::KeyChoice estimator({ "beer_lambert", "crossing", "pooled" });
   ray::DoubleArgument stem_diameter(0.0001, 10.0);
   ray::Vector3dArgument footprint(0.0, 1.0), min_bound(-1e10, 1e10), max_bound(-1e10, 1e10);
   ray::Vector3dArgument cell_size(0.0001, 1e6, Eigen::Vector3d(1.0, 1.0, 0.1));
-  ray::DoubleArgument max_sin_zenith(0.0, 1.0);
+  ray::DoubleArgument max_sin_zenith(0.0, 1.0), pool_radius(0.0, 100.0);
   ray::FileArgument cells_file(false);
   ray::IntArgument resolution(1, 20000, 512);
   ray::FileArgument cloud_file, image_file, transform_file, projection_file(false), profile_file(false);
-  ray::OptionalFlagArgument mark_origin("mark_origin", 'm'), view_flag("view", 'v'), no_flat_top("no_flat_top", 'u');
+  ray::OptionalFlagArgument mark_origin("mark_origin", 'm'), view_flag("view", 'v'), no_flat_top("no_flat_top", 'u'),
+    no_overlap("no_overlap_correction", 'k');
   ray::OptionalKeyValueArgument resolution_option("resolution", 'r', &resolution);
   ray::OptionalKeyValueArgument pixel_width_option("pixel_width", 'p', &pixel_width);
   ray::OptionalKeyValueArgument grid_width_option("grid_width", 'g', &grid_width);
@@ -93,6 +100,7 @@ int rayRender(int argc, char *argv[])
   ray::OptionalKeyValueArgument cells_option("cells", 'c', &cells_file);
   ray::OptionalKeyValueArgument cell_size_option("cell_size", 'l', &cell_size);
   ray::OptionalKeyValueArgument max_sin_zenith_option("max_sin_zenith", 'y', &max_sin_zenith);
+  ray::OptionalKeyValueArgument pool_radius_option("pool_radius", 'q', &pool_radius);
   ray::OptionalKeyValueArgument stem_diameter_option("stem_diameter", 's', &stem_diameter);
   ray::OptionalKeyValueArgument footprint_option("footprint", 'b', &footprint);
   ray::OptionalKeyValueArgument min_bound_option("min_bound", 'n', &min_bound);
@@ -103,12 +111,18 @@ int rayRender(int argc, char *argv[])
           &mark_origin,          &transform_file_option, &grid_width_option,   &projection_file_option,
           &density_model_option, &min_sin_zenith_option, &profile_file_option, &stem_diameter_option,
           &footprint_option,     &min_bound_option,      &max_bound_option,    &no_flat_top,
-          &estimator_option,     &cells_option,          &cell_size_option,    &max_sin_zenith_option }))
+          &estimator_option,     &cells_option,          &cell_size_option,    &max_sin_zenith_option,
+          &no_overlap,           &pool_radius_option }))
   {
     usage();
   }
   ray::DensityOptions density_options;
   density_options.flat_top_compensation = !no_flat_top.isSet();
+  density_options.overlap_correction = !no_overlap.isSet();
+  if (pool_radius_option.isSet())
+  {
+    density_options.pool_radius = pool_radius.value();
+  }
   if (cells_option.isSet())
   {
     density_options.cells_file = cells_file.name();

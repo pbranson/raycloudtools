@@ -16,6 +16,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <fstream>
+#include <random>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -592,6 +593,243 @@ void DensityGrid::calculateDensities(const std::string &file_name)
   Cloud::read(file_name, calculate);
 }
 
+namespace
+{
+/// Deterministic uniform random number in (0, 1), independent of the standard library's distributions
+inline double uniform01(std::mt19937 &gen)
+{
+  return (static_cast<double>(gen()) + 0.5) / 4294967296.0;
+}
+}  // namespace
+
+double freePathResponse(double solid_fraction, double width_ratio)
+{
+  if (solid_fraction <= 0.0)
+  {
+    return 1.0;
+  }
+  solid_fraction = std::min(solid_fraction, 0.4);
+  width_ratio = std::max(width_ratio, 1.0);
+  // non-overlapping stems of unit diameter, placed by random sequential addition in a square
+  const int num_stems = 1500;
+  const int num_lines = 20000;
+  const double diameter = 1.0;
+  const double side = std::sqrt(num_stems * kPi * diameter * diameter / (4.0 * solid_fraction));
+  const double density = num_stems / (side * side);
+  std::mt19937 gen(12345);  // fixed seed, so the response is deterministic
+  const double cell = std::max(diameter, 0.5 * width_ratio * diameter);
+  const int cells = std::max(1, static_cast<int>(std::ceil(side / cell)));
+  std::vector<std::vector<Eigen::Vector2d>> buckets(static_cast<size_t>(cells * cells));
+  auto bucket = [&](double x) { return std::min(cells - 1, std::max(0, static_cast<int>(x / cell))); };
+  // whether any stem centre is closer than dist to pos (dist no more than the cell width)
+  auto near = [&](const Eigen::Vector2d &pos, double dist) {
+    const int bx = bucket(pos[0]), by = bucket(pos[1]);
+    for (int x = std::max(0, bx - 1); x <= std::min(cells - 1, bx + 1); x++)
+    {
+      for (int y = std::max(0, by - 1); y <= std::min(cells - 1, by + 1); y++)
+      {
+        for (const auto &c : buckets[static_cast<size_t>(x + cells * y)])
+        {
+          if ((pos - c).squaredNorm() < dist * dist)
+          {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  };
+  std::vector<Eigen::Vector2d> stems;
+  for (long long attempt = 0; static_cast<int>(stems.size()) < num_stems && attempt < 100000000LL; attempt++)
+  {
+    const Eigen::Vector2d pos(side * uniform01(gen), side * uniform01(gen));
+    if (!near(pos, diameter))
+    {
+      stems.push_back(pos);
+      buckets[static_cast<size_t>(bucket(pos[0]) + cells * bucket(pos[1]))].push_back(pos);
+    }
+  }
+  // lines from random points that are free of the widened stems, until their first hit or the edge of the square
+  const double radius = 0.5 * width_ratio * diameter;
+  double hits = 0.0, path = 0.0;
+  for (int l = 0; l < num_lines; l++)
+  {
+    Eigen::Vector2d start;
+    do
+    {
+      start = Eigen::Vector2d(side * (0.1 + 0.8 * uniform01(gen)), side * (0.1 + 0.8 * uniform01(gen)));
+    } while (near(start, radius));
+    const double angle = 2.0 * kPi * uniform01(gen);
+    const Eigen::Vector2d dir(std::cos(angle), std::sin(angle));
+    double t_max = std::numeric_limits<double>::max();
+    for (int i = 0; i < 2; i++)
+    {
+      if (dir[i] > 1e-12)
+      {
+        t_max = std::min(t_max, (side - start[i]) / dir[i]);
+      }
+      else if (dir[i] < -1e-12)
+      {
+        t_max = std::min(t_max, -start[i] / dir[i]);
+      }
+    }
+    double best = t_max;
+    for (const auto &c : stems)
+    {
+      const Eigen::Vector2d rel = c - start;
+      const double b = rel.dot(dir);
+      const double disc = b * b - (rel.squaredNorm() - radius * radius);
+      if (disc >= 0.0)
+      {
+        const double t = b - std::sqrt(disc);
+        if (t > 0.0 && t < best)
+        {
+          best = t;
+        }
+      }
+    }
+    path += best;
+    hits += best < t_max ? 1.0 : 0.0;
+  }
+  return hits / (path * density * width_ratio * diameter);
+}
+
+double StemResponseTable::response(double solid_fraction, double width_ratio)
+{
+  // bilinear interpolation over a grid of solid fractions and width ratios, evaluated on demand
+  static const std::vector<double> fractions = { 0.0, 0.01, 0.02, 0.04, 0.07, 0.1, 0.15, 0.2, 0.3, 0.4 };
+  const double ratio_step = 0.25, max_ratio = 5.0;
+  solid_fraction = std::max(0.0, std::min(solid_fraction, fractions.back()));
+  const double r = (std::max(1.0, std::min(width_ratio, max_ratio)) - 1.0) / ratio_step;
+  const int r0 = std::min(static_cast<int>(r), static_cast<int>((max_ratio - 1.0) / ratio_step) - 1);
+  size_t f0 = 0;
+  while (f0 + 2 < fractions.size() && fractions[f0 + 1] < solid_fraction)
+  {
+    f0++;
+  }
+  const double fb = (solid_fraction - fractions[f0]) / (fractions[f0 + 1] - fractions[f0]);
+  const double rb = r - r0;
+  auto value = [&](size_t f, int ri) {
+    const auto key = std::make_pair(static_cast<int>(f), ri);
+    auto it = table_.find(key);
+    if (it == table_.end())
+    {
+      it = table_.emplace(key, freePathResponse(fractions[f], 1.0 + ratio_step * ri)).first;
+    }
+    return it->second;
+  };
+  return (1.0 - rb) * ((1.0 - fb) * value(f0, r0) + fb * value(f0 + 1, r0)) +
+         rb * ((1.0 - fb) * value(f0, r0 + 1) + fb * value(f0 + 1, r0 + 1));
+}
+
+void DensityGrid::enableOverlapCorrection()
+{
+  if (distribution_ != ElementDistribution::VerticalCylinder || stem_diameter_ <= 0.0)
+  {
+    return;
+  }
+  overlap_path_.assign(voxels_.size(), 0.0f);
+}
+
+void DensityGrid::applyOverlapCorrection()
+{
+  const bool pooled = path_estimator_ == PathEstimator::PooledBeerLambert;
+  if (overlap_path_.empty() && !pooled)
+  {
+    return;
+  }
+  // neighbourhood of about +-0.1 m horizontally, to estimate the local density with less noise than a single voxel
+  const int radius = std::max(0, static_cast<int>(std::round(pool_radius_ / voxel_width_)));
+  std::vector<float> new_hits(voxels_.size());
+  for (size_t i = 0; i < voxels_.size(); i++)
+  {
+    new_hits[i] = voxels_[i].numHits();
+  }
+  size_t num_corrected = 0, num_saturated = 0;
+  double sum_factor = 0.0, sum_k_path = 0.0, sum_path = 0.0;
+  for (int z = 0; z < voxel_dims_[2]; z++)
+  {
+    for (int y = 0; y < voxel_dims_[1]; y++)
+    {
+      for (int x = 0; x < voxel_dims_[0]; x++)
+      {
+        const int ind = getIndex(Eigen::Vector3i(x, y, z));
+        if (pooled ? voxels_[ind].numRays() <= 0.0f : voxels_[ind].numHits() <= 0.0f)
+        {
+          continue;
+        }
+        double hits = 0.0, path = 0.0, k_path = 0.0;
+        for (int i = std::max(0, x - radius); i <= std::min(voxel_dims_[0] - 1, x + radius); i++)
+        {
+          for (int j = std::max(0, y - radius); j <= std::min(voxel_dims_[1] - 1, y + radius); j++)
+          {
+            const int n = getIndex(Eigen::Vector3i(i, j, z));
+            hits += voxels_[n].numHits();
+            path += voxels_[n].pathLength();
+            if (!overlap_path_.empty())
+            {
+              k_path += overlap_path_[static_cast<size_t>(n)];
+            }
+          }
+        }
+        if (path <= 0.0)
+        {
+          continue;
+        }
+        const double measured = hits / path;  // local measured density
+        double factor = 1.0;
+        if (k_path > 0.0 && measured > 0.0 && path_estimator_ != PathEstimator::Crossing)
+        {
+          // measured = a R(pi d a / 4, rho) for true density a = N d. Solve for a by bisection, as a R is increasing
+          const double rho = k_path / path;  // path-weighted mean ratio of effective width to diameter
+          const double max_density = max_solid_fraction_ * 4.0 / (kPi * stem_diameter_);
+          auto response = [&](double a) { return a * response_.response(0.25 * kPi * stem_diameter_ * a, rho); };
+          double a = max_density;
+          if (measured < response(max_density))
+          {
+            double low = 0.0, high = max_density;
+            for (int it = 0; it < 40; it++)
+            {
+              const double mid = 0.5 * (low + high);
+              (response(mid) < measured ? low : high) = mid;
+            }
+            a = 0.5 * (low + high);
+          }
+          else
+          {
+            num_saturated++;
+          }
+          factor = a / measured;
+          num_corrected++;
+          sum_factor += factor;
+          sum_k_path += overlap_path_[static_cast<size_t>(ind)];
+          sum_path += voxels_[ind].pathLength();
+        }
+        // for the pooled estimator, the voxel takes the neighbourhood's density, keeping its own path length
+        new_hits[static_cast<size_t>(ind)] =
+          static_cast<float>(factor * (pooled ? measured * voxels_[ind].pathLength() : voxels_[ind].numHits()));
+      }
+    }
+  }
+  for (size_t i = 0; i < voxels_.size(); i++)
+  {
+    voxels_[i].numHits() = new_hits[i];
+  }
+  if (num_corrected > 0 && sum_path > 0.0)
+  {
+    std::cout << "stem occlusion correction: mean factor " << sum_factor / static_cast<double>(num_corrected)
+              << " over " << num_corrected << " voxels, with mean effective width / diameter of "
+              << sum_k_path / sum_path << std::endl;
+    if (num_saturated > 0)
+    {
+      std::cout << "Warning: " << num_saturated << " voxels are beyond the maximum solid fraction ("
+                << max_solid_fraction_ << ") for " << stem_diameter_
+                << " m stems, of N*d = " << max_solid_fraction_ * 4.0 / (kPi * stem_diameter_)
+                << " m^-1. Their densities are set to this limit. Check the stem diameter" << std::endl;
+    }
+  }
+}
+
 // When the cloud has a sharp change in density at the top (e.g. grass or wheat field) between air and the crop, then
 // this function adjusts the density estimation based on this two-phase density, rather than assuming the top voxel is
 // uniform density
@@ -917,6 +1155,7 @@ bool renderCloud(const std::string &cloud_file, const Cuboid &bounds, ViewDirect
       DensityGrid grid(grid_bounds, pix_width, dims, density_options.distribution,
                        cylinders ? density_options.min_sin_zenith : 0.0);
       grid.setPathEstimator(density_options.path_estimator);
+      grid.setPoolRadius(density_options.pool_radius);
       if (cylinders)
       {
         grid.setMaxG(density_options.max_sin_zenith);
@@ -949,6 +1188,10 @@ bool renderCloud(const std::string &cloud_file, const Cuboid &bounds, ViewDirect
         grid.calculatePeaks(cloud_file);
       }
 #endif
+      if (cylinders && density_options.overlap_correction && density_options.stem_diameter > 0.0)
+      {
+        grid.enableOverlapCorrection();
+      }
       grid.calculateDensities(cloud_file);
       if (grid.numIgnoredRays() > 0)
       {
@@ -961,6 +1204,7 @@ bool renderCloud(const std::string &cloud_file, const Cuboid &bounds, ViewDirect
         grid.flatTopCompensation();
       }
 #endif
+      grid.applyOverlapCorrection();
 #if DENSITY_MIN_RAYS > 0
       grid.addNeighbourPriors();
 #endif

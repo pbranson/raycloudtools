@@ -4,17 +4,67 @@
 #include "raypneumatophoregen.h"
 
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <limits>
+#include <sstream>
+#include <stdexcept>
 
 namespace ray
 {
+namespace
+{
+/// Spatial hash of stem positions, to reject candidate stems that would overlap existing ones (a hard-core process)
+class StemHash
+{
+public:
+  StemHash(double field_min, double field_width, double diameter)
+    : min_(field_min)
+    , cell_(std::max(diameter, 1e-4))
+    , diameter2_(diameter * diameter)
+  {
+    cells_ = std::max(1, static_cast<int>(std::ceil(field_width / cell_)));
+    buckets_.resize(static_cast<size_t>(cells_) * static_cast<size_t>(cells_));
+  }
+  bool overlaps(const Eigen::Vector2d &pos) const
+  {
+    const int bx = index(pos[0]), by = index(pos[1]);
+    for (int x = std::max(0, bx - 1); x <= std::min(cells_ - 1, bx + 1); x++)
+    {
+      for (int y = std::max(0, by - 1); y <= std::min(cells_ - 1, by + 1); y++)
+      {
+        for (const auto &c : buckets_[static_cast<size_t>(x) + static_cast<size_t>(cells_) * static_cast<size_t>(y)])
+        {
+          if ((pos - c).squaredNorm() < diameter2_)
+          {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+  void add(const Eigen::Vector2d &pos)
+  {
+    buckets_[static_cast<size_t>(index(pos[0])) + static_cast<size_t>(cells_) * static_cast<size_t>(index(pos[1]))]
+      .push_back(pos);
+  }
+
+private:
+  int index(double x) const { return std::min(cells_ - 1, std::max(0, static_cast<int>((x - min_) / cell_))); }
+  double min_, cell_, diameter2_;
+  int cells_;
+  std::vector<std::vector<Eigen::Vector2d>> buckets_;
+};
+}  // namespace
+
 void PneumatophoreGen::generateStems(std::mt19937 &gen)
 {
   const PneumatophoreParams &p = params_;
   std::uniform_real_distribution<double> uniform(0.0, 1.0);
   std::normal_distribution<double> normal(0.0, 1.0);
   const double half_field = 0.5 * p.plot_width + p.margin;
+  const double field_area = 4.0 * half_field * half_field;
   auto random_height = [&]() {
     double h;
     do
@@ -22,6 +72,59 @@ void PneumatophoreGen::generateStems(std::mt19937 &gen)
       h = p.mean_height + p.height_sd * normal(gen);
     } while (h < 0.02);
     return h;
+  };
+  auto random_position = [&]() {
+    return Eigen::Vector2d(-half_field + 2.0 * half_field * uniform(gen),
+                           -half_field + 2.0 * half_field * uniform(gen));
+  };
+  // stems as a fraction of ground area, at the (local) density stems_per_m2
+  const double solid_fraction = p.stems_per_m2 * kPi * p.diameter * p.diameter / 4.0;
+  if (p.hard_core && solid_fraction > max_solid_fraction)
+  {
+    std::stringstream ss;
+    ss << "stems of diameter " << p.diameter << " m cannot be placed without overlap at " << p.stems_per_m2
+       << " per m^2: the solid fraction (N pi d^2 / 4) of " << solid_fraction << " exceeds " << max_solid_fraction
+       << ", near the random packing limit of 0.547. That is, at most "
+       << max_solid_fraction * 4.0 / (kPi * p.diameter * p.diameter) << " stems per m^2";
+    throw std::runtime_error(ss.str());
+  }
+  StemHash hash(-half_field, 2.0 * half_field, p.diameter);
+  // accepts a stem unless it overlaps an existing one (when hard_core)
+  auto try_add = [&](const Eigen::Vector2d &pos) {
+    if (p.hard_core && hash.overlaps(pos))
+    {
+      return false;
+    }
+    hash.add(pos);
+    stems_.emplace_back(pos[0], pos[1], random_height());
+    return true;
+  };
+  // the number of stems to place in an area: exact (rounded) when hard_core, otherwise Poisson distributed
+  auto stem_count = [&](double expected) {
+    if (p.hard_core)
+    {
+      return static_cast<int>(std::round(expected));
+    }
+    std::poisson_distribution<int> count(expected);
+    return count(gen);
+  };
+  // random sequential addition of a given number of stems, to positions sampled by the given acceptance function
+  auto place = [&](int target, const std::function<bool(const Eigen::Vector2d &)> &accept) {
+    const long long max_attempts = 1000LL * std::max(target, 1) + 100000LL;
+    int placed = 0;
+    for (long long attempt = 0; placed < target && attempt < max_attempts; attempt++)
+    {
+      const Eigen::Vector2d pos = random_position();
+      if (accept(pos) && try_add(pos))
+      {
+        placed++;
+      }
+    }
+    if (placed < target)
+    {
+      std::cerr << "Warning: only " << placed << " of " << target << " stems could be placed without overlap"
+                << std::endl;
+    }
   };
 
   stems_.clear();
@@ -63,31 +166,31 @@ void PneumatophoreGen::generateStems(std::mt19937 &gen)
       }
       return false;
     };
-    const double area = 4.0 * half_field * half_field;
-    std::poisson_distribution<int> count(p.stems_per_m2 * area);
-    const int num = count(gen);
-    for (int i = 0; i < num; i++)
+    // measure the patch area within the field, so that the density within patches is as specified
+    const double sample_width = std::min(0.02, 0.1 * p.patch_radius);
+    const int samples = static_cast<int>(std::ceil(2.0 * half_field / sample_width));
+    long long inside = 0;
+    for (int i = 0; i < samples; i++)
     {
-      const Eigen::Vector2d pos(-half_field + 2.0 * half_field * uniform(gen),
-                                -half_field + 2.0 * half_field * uniform(gen));
-      if (in_patch(pos) || uniform(gen) < p.matrix_ratio)
+      for (int j = 0; j < samples; j++)
       {
-        stems_.emplace_back(pos[0], pos[1], random_height());
+        const Eigen::Vector2d pos(-half_field + sample_width * (i + 0.5), -half_field + sample_width * (j + 0.5));
+        inside += in_patch(pos) ? 1 : 0;
       }
+    }
+    const double patch_area = field_area * static_cast<double>(inside) / (static_cast<double>(samples) * samples);
+    place(stem_count(p.stems_per_m2 * patch_area), in_patch);
+    if (p.matrix_ratio > 0.0)
+    {
+      place(stem_count(p.matrix_ratio * p.stems_per_m2 * (field_area - patch_area)),
+            [&](const Eigen::Vector2d &pos) { return !in_patch(pos); });
     }
     return;
   }
   if (!p.clustered)
   {
-    // Poisson process: complete spatial randomness
-    const double area = 4.0 * half_field * half_field;
-    std::poisson_distribution<int> count(p.stems_per_m2 * area);
-    const int num = count(gen);
-    for (int i = 0; i < num; i++)
-    {
-      stems_.emplace_back(-half_field + 2.0 * half_field * uniform(gen), -half_field + 2.0 * half_field * uniform(gen),
-                          random_height());
-    }
+    // complete spatial randomness, or (when hard_core) random sequential addition of non-overlapping stems
+    place(stem_count(p.stems_per_m2 * field_area), [](const Eigen::Vector2d &) { return true; });
     return;
   }
   // clustered: stems lie along cable roots radiating from trees. Trees are generated beyond the field so that roots
@@ -97,7 +200,7 @@ void PneumatophoreGen::generateStems(std::mt19937 &gen)
   std::poisson_distribution<int> tree_count(p.trees_per_m2 * tree_area);
   const int num_trees = tree_count(gen);
   const double stems_per_metre_of_root = p.stems_per_m2 / (p.trees_per_m2 * p.roots_per_tree * p.root_length);
-  std::poisson_distribution<int> root_stem_count(stems_per_metre_of_root * p.root_length);
+  int num_failed = 0;
   for (int t = 0; t < num_trees; t++)
   {
     const Eigen::Vector2d tree(-half_tree_field + 2.0 * half_tree_field * uniform(gen),
@@ -110,17 +213,31 @@ void PneumatophoreGen::generateStems(std::mt19937 &gen)
         angle_offset + 2.0 * kPi * (static_cast<double>(r) + 0.3 * (uniform(gen) - 0.5)) / p.roots_per_tree;
       const Eigen::Vector2d along(std::cos(angle), std::sin(angle));
       const Eigen::Vector2d across(-along[1], along[0]);
-      const int num = root_stem_count(gen);
+      const int num = stem_count(stems_per_metre_of_root * p.root_length);
       for (int i = 0; i < num; i++)
       {
-        const Eigen::Vector2d pos =
-          tree + along * (p.root_length * uniform(gen)) + across * (p.lateral_spread * normal(gen));
-        if (std::abs(pos[0]) < half_field && std::abs(pos[1]) < half_field)
+        bool placed = false;
+        for (int attempt = 0; attempt < 100 && !placed; attempt++)
         {
-          stems_.emplace_back(pos[0], pos[1], random_height());
+          const Eigen::Vector2d pos =
+            tree + along * (p.root_length * uniform(gen)) + across * (p.lateral_spread * normal(gen));
+          if (std::abs(pos[0]) >= half_field || std::abs(pos[1]) >= half_field)
+          {
+            placed = true;  // outside of the field, so not needed
+          }
+          else
+          {
+            placed = try_add(pos);
+          }
         }
+        num_failed += placed ? 0 : 1;
       }
     }
+  }
+  if (num_failed > 0)
+  {
+    std::cerr << "Warning: " << num_failed << " stems could not be placed along cable roots without overlap"
+              << std::endl;
   }
 }
 

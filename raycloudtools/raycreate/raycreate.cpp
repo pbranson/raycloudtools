@@ -42,6 +42,8 @@ void usage(int exit_code = 1)
   std::cout << "             --footprint 0.01,0.003,0.05 - beam exit diameter (m), divergence (rad), detection threshold" << std::endl;
   std::cout << "             --rays 2000000         - number of rays" << std::endl;
   std::cout << "             --ground_returns       - keep ground returns as bounded rays (default: zero alpha)" << std::endl;
+  std::cout << "             --overlapping          - independent (Poisson) stem positions, which may overlap, and a Poisson" << std::endl;
+  std::cout << "                                      number of stems. Default: exact number of non-overlapping stems" << std::endl;
   std::cout << std::endl;
   std::cout << "          forest trees.txt - generate from a comma-separated list of x,y,z,radius trees" << std::endl;
   std::cout << "          terrain mesh.ply - generate from a ground mesh" << std::endl;
@@ -72,11 +74,12 @@ int rayCreate(int argc, char *argv[])
   ray::OptionalKeyValueArgument walk_option("walk_spacing", 'w', &walk_spacing);
   ray::OptionalKeyValueArgument zenith_option("zenith", 'z', &zenith);
   ray::OptionalKeyValueArgument truth_cells_option("truth_cells", 't', &truth_cells);
-  ray::OptionalFlagArgument clustered_flag("clustered", 'c'), ground_flag("ground_returns", 'g');
+  ray::OptionalFlagArgument clustered_flag("clustered", 'c'), ground_flag("ground_returns", 'g'),
+    overlapping_flag("overlapping", 'o');
   const std::vector<ray::OptionalArgument *> options = { &view_flag,     &stems_option,     &diameter_option,
                                                          &rays_option,   &footprint_option, &clustered_flag,
                                                          &ground_flag,   &spread_option,    &patchy_option,
-                                                         &walk_option,   &zenith_option,    &truth_cells_option };
+                                                         &walk_option,   &zenith_option,    &truth_cells_option, &overlapping_flag };
   bool from_seed = ray::parseCommandLine(argc, argv, { &cloud_type, &seed }, options);
   bool from_file = ray::parseCommandLine(argc, argv, { &cloud_type, &input_file }, options);
   if (!from_seed && !from_file)
@@ -283,6 +286,7 @@ int rayCreate(int argc, char *argv[])
     params.clustered = clustered_flag.isSet();
     params.lateral_spread = spread.value();
     params.walk_spacing = walk_spacing.value();
+    params.hard_core = !overlapping_flag.isSet();
     if (patchy_option.isSet())
     {
       params.patchy = true;
@@ -303,7 +307,15 @@ int rayCreate(int argc, char *argv[])
       params.footprint.threshold = footprint.value()[2];
     }
     ray::PneumatophoreGen gen;
-    gen.generate(params, static_cast<unsigned int>(seed.value()));
+    try
+    {
+      gen.generate(params, static_cast<unsigned int>(seed.value()));
+    }
+    catch (const std::runtime_error &e)
+    {
+      std::cerr << "Error: " << e.what() << std::endl;
+      return 1;
+    }
     cloud = gen.cloud();
     if (!gen.writeTruthProfile(type + "_truth.csv", 0.01))
     {

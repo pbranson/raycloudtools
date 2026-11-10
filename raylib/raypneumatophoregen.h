@@ -24,7 +24,13 @@ struct RAYLIB_EXPORT PneumatophoreParams
   double mean_height = 0.25;    // mean stem height (m)
   double height_sd = 0.08;      // standard deviation of stem height (m), truncated to be positive
 
-  // spatial arrangement. Random is a Poisson (complete spatial randomness) process. Clustered places stems along
+  // Stems are placed without overlapping each other (a hard-core process, by random sequential addition), with the
+  // exact number of stems for the density. Otherwise stem positions are independent (Poisson), so stems may overlap
+  // and the number of stems is Poisson distributed. Hard-core stems limit the solid fraction N pi d^2 / 4 to the
+  // random packing limit of about 0.547
+  bool hard_core = true;
+
+  // spatial arrangement. Random places stems uniformly at random over the ground. Clustered places stems along
   // cable roots radiating from trees, with the same mean density
   bool clustered = false;
   double trees_per_m2 = 0.04;    // tree density, when clustered
@@ -52,6 +58,10 @@ struct RAYLIB_EXPORT PneumatophoreParams
   double min_zenith_deg = 0.0;
   double max_zenith_deg = 101.5;
 };
+
+/// The highest solid fraction N pi d^2 / 4 at which non-overlapping stems are generated, just below the random
+/// sequential addition (jamming) limit of 0.547 for discs
+static constexpr double max_solid_fraction = 0.5;
 
 /// Generates a synthetic pneumatophore field and its ray cloud. Stems are coloured green, ground returns brown
 class RAYLIB_EXPORT PneumatophoreGen

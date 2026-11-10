@@ -559,6 +559,48 @@ TEST(Basic, RayDensityFootprintWidth)
   EXPECT_NEAR(model.width(5.003), ray::effectiveStemWidth(diameter, footprint.diameter(5.003), threshold), 1e-5);
 }
 
+/// The free path response to non-overlapping stems is deterministic. For a negligible footprint it is at least
+/// 1 / (1 - solid fraction), from the stems' area being excluded from the free path. It is a little more, as the
+/// paths start at random free points, so sample the gaps between stems in proportion to their length, and these
+/// gaps are more regular than the exponential gaps between overlapping (Poisson) stems
+TEST(Basic, RayDensityFreePathResponse)
+{
+  const double response = ray::freePathResponse(0.1, 1.0);
+  EXPECT_EQ(response, ray::freePathResponse(0.1, 1.0));
+  EXPECT_GT(response, 1.0 / (1.0 - 0.1));
+  EXPECT_LT(response, 1.0 / (1.0 - 0.1) + 0.05);
+  EXPECT_EQ(ray::freePathResponse(0.0, 2.0), 1.0);
+  // widening the stems leaves less free space, so increases the response
+  EXPECT_GT(ray::freePathResponse(0.1, 2.25), response + 0.03);
+  ray::StemResponseTable table;
+  EXPECT_NEAR(table.response(0.1, 2.25), ray::freePathResponse(0.1, 2.25), 1e-9);
+}
+
+/// Generated stems don't overlap, and have the exact density requested, up to the packing limit
+TEST(Basic, RayDensityStemPlacement)
+{
+  ray::PneumatophoreParams params;
+  params.num_rays = 1;
+  params.stems_per_m2 = 2000.0;  // solid fraction 0.157 for 1 cm stems
+  params.plot_width = 2.0;
+  params.margin = 0.5;
+  ray::PneumatophoreGen gen;
+  gen.generate(params, 3);
+  const double field_width = params.plot_width + 2.0 * params.margin;
+  EXPECT_EQ(static_cast<double>(gen.stems().size()), std::round(params.stems_per_m2 * field_width * field_width));
+  double min_separation2 = std::numeric_limits<double>::max();
+  for (size_t i = 0; i < gen.stems().size(); i++)
+  {
+    for (size_t j = i + 1; j < gen.stems().size(); j++)
+    {
+      min_separation2 = std::min(min_separation2, (gen.stems()[i] - gen.stems()[j]).head<2>().squaredNorm());
+    }
+  }
+  EXPECT_GE(std::sqrt(min_separation2), params.diameter);
+  params.stems_per_m2 = 7000.0;  // solid fraction 0.55, beyond the packing limit
+  EXPECT_THROW(gen.generate(params, 3), std::runtime_error);
+}
+
 /// End-to-end check on a synthetic hand-held scan of a random pneumatophore field with a finite beam footprint:
 /// the near-ground frontal area per volume profile should match the truth when corrected for the footprint, and be
 /// substantially overestimated when not
@@ -588,9 +630,8 @@ TEST(Basic, RayDensityPneumatophores)
   auto lowest_layer = [&](bool correct_footprint) {
     ray::DensityOptions options;
     options.distribution = ray::ElementDistribution::VerticalCylinder;
-    options.path_estimator = ray::PathEstimator::Crossing;
+    options.path_estimator = ray::PathEstimator::PooledBeerLambert;
     options.flat_top_compensation = false;
-    options.min_sin_zenith = 0.5;
     options.profile_file = "pneumatophores_test_profile.csv";
     if (correct_footprint)
     {
@@ -620,8 +661,6 @@ TEST(Basic, RayDensityPneumatophores)
   const double uncorrected = lowest_layer(false);
   std::cout << "true N*d near ground: " << truth << ", footprint corrected estimate: " << corrected
             << ", uncorrected: " << uncorrected << std::endl;
-  // residual biases: stems occluding each other within a voxel (lower), and the footprint-widened stems
-  // overlapping (lower by about exp(-N pi d_eff^2 / 4), ~ -5% here), are each a few percent at this density
   EXPECT_NEAR(corrected, truth, 0.05 * truth);
   EXPECT_GT(uncorrected, 1.5 * truth);
 }

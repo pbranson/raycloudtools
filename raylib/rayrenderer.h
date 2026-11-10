@@ -9,6 +9,8 @@
 #include "raycuboid.h"
 #include "raypose.h"
 #include "rayutils.h"
+
+#include <map>
 #define FLAT_TOP_COMPENSATION  // use a 2-medium model for the top of the cloud, so only the cloud's density is
                                // estimated, not the air above it
 
@@ -78,6 +80,23 @@ double RAYLIB_EXPORT stripInterceptFraction(double width, double beam_diameter, 
 /// thresholds, and is zero when the cylinder is too thin to ever trigger a return.
 double RAYLIB_EXPORT effectiveStemWidth(double diameter, double beam_diameter, double threshold);
 
+/// The response of the Beer-Lambert (free path) estimate to non-overlapping vertical stems: the hit rate per unit
+/// free path divided by N d_eff, for stems at solid fraction N pi d^2 / 4, seen by the beam with effective width
+/// width_ratio * d. It exceeds 1 because the free path excludes the stems' (widened) cross-sections, which leave less
+/// free space than if they overlapped (for which it is exactly 1). Paths start at random free points, as rays enter
+/// the stem layer at random points. Computed deterministically by a 2D Monte-Carlo simulation (fixed seed).
+double RAYLIB_EXPORT freePathResponse(double solid_fraction, double width_ratio);
+
+/// Lookup of freePathResponse, interpolated over a grid of values that are computed when first needed
+class RAYLIB_EXPORT StemResponseTable
+{
+public:
+  double response(double solid_fraction, double width_ratio);
+
+private:
+  std::map<std::pair<int, int>, double> table_;
+};
+
 /// Tabulated effective width of a stem of given diameter as a function of range, for fast lookup
 class RAYLIB_EXPORT StemWidthModel
 {
@@ -111,7 +130,13 @@ enum class RAYLIB_EXPORT PathEstimator
   /// The path to where the ray would have exited the voxel. density = hits / crossing length is exact for any
   /// spatial arrangement of elements (including clumped), provided elements rarely occlude each other within a
   /// single voxel. So it suits voxels that are small relative to the mean free path, e.g. pneumatophores.
-  Crossing
+  Crossing,
+  /// The path up to the hit point (as BeerLambert), but each voxel takes the density of its horizontal
+  /// neighbourhood of pool_radius (default +-0.05 m), pooled as total hits over total path length. Pooling avoids the
+  /// bias of averaging noisy per-voxel ratios, and the Beer-Lambert estimate needs no correction for stems occluding
+  /// each other within a voxel, as it is exact for randomly placed stems. The neighbourhood limits it to resolving
+  /// patchiness at scales smaller than the neighbourhood.
+  PooledBeerLambert
 };
 
 /// Options controlling the voxel density estimate
@@ -136,6 +161,18 @@ struct RAYLIB_EXPORT DensityOptions
   /// apparent widening of thin stems by the beam footprint, so the density remains N d for the true diameter d.
   BeamFootprint footprint;
   double stem_diameter = 0.0;
+  /// For VerticalCylinder with a stem_diameter, and the beer_lambert or pooled estimators: correct the free-path
+  /// estimate for the space occupied by the stems, as widened by the footprint. The free path excludes the stems'
+  /// widened cross-sections, so the measured density is a R(phi, rho) for true density a = N d, solid fraction
+  /// phi = N pi d^2 / 4 and widening rho = d_eff / d (see freePathResponse). This is inverted using the density of
+  /// a neighbourhood of pool_radius (default +-0.05 m) horizontally. The solid fraction is limited to 0.4 (below the
+  /// random packing limit of 0.547 for non-overlapping discs), so N d is at most 1.6 / (pi d).
+  bool overlap_correction = true;
+  /// Half-width (m) of the horizontal neighbourhood used by the pooled estimator and the occlusion correction.
+  /// Smaller resolves finer patchiness, but with fewer hits per neighbourhood, which biases the estimate high in
+  /// sparse areas (about +6% at 30 stems/m^2 for 0.05 m, +3% for 0.1 m). Don't adapt it to the number of hits, as
+  /// that is a stopping rule that biases the estimate high.
+  double pool_radius = 0.05;
   /// Model the top of the cloud as a sharp boundary between air and a uniform medium (e.g. a grass or crop
   /// canopy), so the air above the highest point in each column is excluded. Not suited to elements of varying
   /// height such as pneumatophores, where it biases the upper layers.
@@ -262,6 +299,13 @@ struct RAYLIB_EXPORT DensityGrid
   inline void setPathEstimator(PathEstimator estimator) { path_estimator_ = estimator; }
   /// Rays with G above this value are ignored
   inline void setMaxG(double max_g) { max_g_ = max_g; }
+  /// Half-width (m) of the horizontal neighbourhood for pooling and the occlusion correction
+  inline void setPoolRadius(double radius) { pool_radius_ = radius; }
+  /// Accumulate the effective width ratio of each ray segment, for applyOverlapCorrection. Requires the stem diameter
+  void enableOverlapCorrection();
+  /// Pool the voxel densities over neighbourhoods (PooledBeerLambert), and correct them for the space occupied by the
+  /// stems (see DensityOptions::overlap_correction). Call after calculateDensities and before addNeighbourPriors.
+  void applyOverlapCorrection();
   /// Correct for the beam footprint widening thin vertical stems, using their (mean) true diameter.
   /// Only applies to the VerticalCylinder distribution
   inline void setFootprint(const BeamFootprint &footprint, double stem_diameter)
@@ -300,12 +344,16 @@ private:
   double max_g_ = std::numeric_limits<double>::max();  // rays with G above this are ignored
   size_t num_ignored_rays_ = 0;
   bool bounded_;
-  double ray_g_;                // G function value of the ray currently being walked
-  double range_offset_ = 0.0;   // distance from the ray's original start to its (clipped) start in the grid
-  StemWidthModel stem_width_;   // optional beam footprint correction
-  double stem_diameter_ = 0.0;  // optional mean stem diameter
-  Eigen::Vector3i hit_voxel_;   // voxel of the end point of the ray currently being walked
-  double hit_length_ = 0.0;     // length (in voxels) to the end point of the ray currently being walked
+  double ray_g_;                     // G function value of the ray currently being walked
+  double range_offset_ = 0.0;        // distance from the ray's original start to its (clipped) start in the grid
+  StemWidthModel stem_width_;        // optional beam footprint correction
+  double stem_diameter_ = 0.0;       // optional mean stem diameter
+  std::vector<float> overlap_path_;  // per voxel, sum of the path-weighted overlap coefficient k of each segment
+  StemResponseTable response_;       // free path response to the stems, for the occlusion correction
+  double pool_radius_ = 0.05;
+  static constexpr double max_solid_fraction_ = 0.4;
+  Eigen::Vector3i hit_voxel_;  // voxel of the end point of the ray currently being walked
+  double hit_length_ = 0.0;    // length (in voxels) to the end point of the ray currently being walked
   PathEstimator path_estimator_ = PathEstimator::BeerLambert;
 
   // used when waling the grid
@@ -396,17 +444,27 @@ inline bool DensityGrid::operator()(const Eigen::Vector3i &p, const Eigen::Vecto
     g *= stem_width_.scale(range);
   }
   // the hit voxel is that of the ray's end point. It is stored, as the walked ray may be extended beyond its hit
+  double weighted_length;
   if (p == hit_voxel_ && bounded_)
   {
     const double length_in_voxel =
       (path_estimator_ == PathEstimator::Crossing ? out_length : std::min(out_length, hit_length_)) - in_length;
-    voxels_[index].addHitRay(static_cast<float>(g * length_in_voxel * voxel_width_));
+    weighted_length = g * length_in_voxel * voxel_width_;
+    voxels_[index].addHitRay(static_cast<float>(weighted_length));
   }
   else
   {
     // end_length, so that rays which end within the voxel without hitting (e.g. zero-alpha ground returns) only
     // count the path length up to their end point
-    voxels_[index].addMissRay(static_cast<float>(g * (end_length - in_length) * voxel_width_));
+    weighted_length = g * (end_length - in_length) * voxel_width_;
+    voxels_[index].addMissRay(static_cast<float>(weighted_length));
+  }
+  if (!overlap_path_.empty())
+  {
+    // accumulate the path-weighted ratio of effective stem width to diameter
+    const double rho =
+      stem_width_.enabled() ? stem_width_.scale(range_offset_ + 0.5 * (in_length + end_length) * voxel_width_) : 1.0;
+    overlap_path_[static_cast<size_t>(index)] += static_cast<float>(rho * weighted_length);
   }
   return false;
 }

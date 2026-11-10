@@ -38,6 +38,8 @@ SCENES = {
 }
 # name: (estimator, voxel width, column of the cells file)
 METHODS = {
+    "pooled 0.05m voxels, mean": ("pooled", 0.05, "mean"),
+    "pooled 0.1m voxels, mean": ("pooled", 0.1, "mean"),
     "crossing 0.05m voxels, mean": ("crossing", 0.05, "mean"),
     "crossing 0.1m voxels, mean": ("crossing", 0.1, "mean"),
     "beer_lambert 0.05m voxels, mean": ("beer_lambert", 0.05, "mean"),
@@ -61,11 +63,15 @@ def main():
     parser.add_argument("--methods", default="", help="only methods containing this text")
     parser.add_argument("--bands", default="", help="sin zenith bands to test, e.g. 0.1-1,0.5-1")
     parser.add_argument("--crossing_widths", default="", help="instead test the crossing estimator at these widths")
+    parser.add_argument("--pooled_widths", default="", help="instead test the pooled estimator at these widths")
+    parser.add_argument("--extra", default="", help="extra rayrender arguments, e.g. --no_overlap_correction")
     parser.add_argument("--stems_per_m2", default="", help="instead test random scenes of these stem densities")
     args = parser.parse_args()
     methods = METHODS
     if args.crossing_widths:
         methods = {f"crossing {w}m voxels, mean": ("crossing", float(w), "mean") for w in args.crossing_widths.split(",")}
+    if args.pooled_widths:
+        methods = {f"pooled {w}m voxels, mean": ("pooled", float(w), "mean") for w in args.pooled_widths.split(",")}
     scenes = SCENES
     if args.stems_per_m2:
         scenes = {f"random {n}/m2": f"--stems_per_m2 {n}" for n in args.stems_per_m2.split(",")}
@@ -91,7 +97,7 @@ def main():
                     f"--estimator {estimator} --no_flat_top --min_sin_zenith {low} --max_sin_zenith {high} "
                     f"--stem_diameter {args.diameter} --footprint {args.footprint} --pixel_width {width} "
                     f"--min_bound -3,-3,0 --max_bound 3,3,{cell_z * args.layers} --cells cells.csv "
-                    f"--cell_size {args.cell_size}")
+                    f"--cell_size {args.cell_size} {args.extra}")
                 cells = read("cells.csv")
                 col = [k for k in cells[0].keys() if k.startswith(column)][0]
                 summary = []
