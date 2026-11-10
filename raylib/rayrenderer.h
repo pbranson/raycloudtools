@@ -37,11 +37,54 @@ enum class RAYLIB_EXPORT RenderStyle
   Density_rgb
 };
 
+/// The assumed orientation distribution of the intercepting elements (leaves, stems, roots) within each voxel.
+/// This selects the G function: the ratio of the elements' mean projected area along a ray direction to the
+/// reference area that the density is reported in.
+enum class RAYLIB_EXPORT ElementDistribution
+{
+  /// Uniform spherical (isotropic) distribution of flat leaf angles. G = 0.5 for every ray direction, and density
+  /// is reported as one-sided leaf area per unit volume (m^2/m^3). This is the original raycloudtools behaviour.
+  Spherical,
+  /// Vertical cylinders (e.g. stems, mangrove pneumatophores) of diameter d at N stems per m^2 of ground. The
+  /// interception rate of a ray at zenith angle theta is N d sin(theta), so G = sin(theta) and density is reported
+  /// as the frontal area per unit volume a = N d (m^-1), as used in vegetation drag models. The integral over
+  /// height (the rendered pixel value) is the frontal area index N d h (m^2/m^2).
+  /// Stem tops (end caps) are not modelled.
+  VerticalCylinder
+};
+
+/// Options controlling the voxel density estimate
+struct RAYLIB_EXPORT DensityOptions
+{
+  ElementDistribution distribution = ElementDistribution::Spherical;
+  /// For VerticalCylinder only: rays whose sin(zenith angle) is below this are ignored entirely, since near-vertical
+  /// rays carry almost no information on vertical elements, and their few (end cap) hits would give outliers.
+  /// Ignoring rays based on their direction alone does not bias the estimate.
+  double min_sin_zenith = 0.1;
+  /// Optional .csv file to write the mean density per horizontal layer of voxels
+  std::string profile_file;
+};
+
+/// The G function: the mean projected area of the elements in the (unit) ray direction @c dir, per unit reference
+/// area. The interception rate (hits per metre of ray) is G * density.
+inline double gFunction(ElementDistribution distribution, const Eigen::Vector3d &dir)
+{
+  switch (distribution)
+  {
+  case ElementDistribution::VerticalCylinder:
+    return std::sqrt(dir[0] * dir[0] + dir[1] * dir[1]);  // sin(zenith angle)
+  case ElementDistribution::Spherical:
+  default:
+    return 0.5;
+  }
+}
+
 /// Render a ray cloud according to the supplied parameters
 bool RAYLIB_EXPORT renderCloud(const std::string &cloud_file, const Cuboid &bounds, ViewDirection view_direction,
                                RenderStyle style, double pix_width, const std::string &image_file,
                                const std::string &projection_file, bool mark_origin,
-                               const std::string *transform_file = nullptr);
+                               const std::string *transform_file = nullptr,
+                               const DensityOptions &density_options = DensityOptions());
 
 #if RAYLIB_WITH_TIFF
 // save to geotif format using floating-point per-channel colour data. This function passes a projection file in order
@@ -51,20 +94,25 @@ bool RAYLIB_EXPORT writeGeoTiffFloat(const std::string &filename, int x, int y, 
 #endif
 
 /// This is used for estimating the per-voxel density of a ray cloud
-/// Density represents the surface area per volume, assuming an unbiased distribution of surface angles
+/// By default density represents the surface area per volume, assuming an unbiased distribution of surface angles
 /// It is most effective as a measure of leaf area per volume on vegetation, and is described in:
 /// Lowe, Thomas, et al. "Canopy Density Estimation in Perennial Horticulture Crops Using 3D Spinning LiDAR SLAM."
 /// arXiv preprint arXiv:2007.15652 (2020).
+/// Other element distributions are supported via @c ElementDistribution. Each ray's path length is weighted by the
+/// G function of its direction, so the per-voxel maximum likelihood estimate is density = hits / sum_i(G_i L_i),
+/// which reduces to the original 2 hits / sum_i(L_i) for the spherical distribution.
 struct RAYLIB_EXPORT DensityGrid
 {
   static const int min_voxel_hits = 2;
-  static constexpr double spherical_distribution_scale =
-    2.0;  // average area scale due to a spherical uniform distribution of leave angles relative to the rays
 
-  DensityGrid(const Cuboid &grid_bounds, double vox_width, const Eigen::Vector3i &dims)
+  DensityGrid(const Cuboid &grid_bounds, double vox_width, const Eigen::Vector3i &dims,
+              ElementDistribution distribution = ElementDistribution::Spherical, double min_g = 0.0)
     : bounds_(grid_bounds)
     , voxel_width_(vox_width)
     , voxel_dims_(dims)
+    , distribution_(distribution)
+    , min_g_(min_g)
+    , ray_g_(0.5)
   {
     // 3D dimensions are stored in a vector of 32-bit signed ints. It's fairly
     // easy to overflow when calculating voxel counts or 1D indices. Make sure
@@ -100,20 +148,21 @@ struct RAYLIB_EXPORT DensityGrid
     inline void operator+=(const Voxel &other);
     /// the densities can be multiplied by a scalar, element-wise
     inline Voxel operator*(float scale) const;
-    /// Add a ray which enters the voxel and hits within it. @c length is the ray length within the voxel
+    /// Add a ray which enters the voxel and hits within it. @c length is the G-weighted ray length within the voxel
     inline void addHitRay(float length);
-    /// Add a ray which enters and exits the voxel. @c length is the ray path length within the voxel
+    /// Add a ray which enters and exits the voxel. @c length is the G-weighted ray path length within the voxel
     inline void addMissRay(float length);
     inline const float &numHits() const { return num_hits_; }
     inline float &numHits() { return num_hits_; }
     inline const float &numRays() const { return num_rays_; }
+    /// The sum over rays of the G-weighted path length (G_i L_i) within the voxel
     inline const float &pathLength() const { return path_length_; }
     inline float &pathLength() { return path_length_; }
 
   private:
     float num_hits_;
     float num_rays_;
-    float path_length_;
+    float path_length_;  // G-weighted
   };
 
   void calculatePeaks(const std::string &file_name);
@@ -132,6 +181,9 @@ struct RAYLIB_EXPORT DensityGrid
   inline Eigen::Vector3i dimensions() { return voxel_dims_; }
   inline Cuboid bounds() { return bounds_; }
   inline double voxelWidth() const { return voxel_width_; }
+  inline ElementDistribution distribution() const { return distribution_; }
+  /// Number of rays ignored because their G value was below min_g
+  inline size_t numIgnoredRays() const { return num_ignored_rays_; }
   // used in walking grid only
   inline bool operator()(const Eigen::Vector3i &p, const Eigen::Vector3i &target, double in_length, double out_length,
                          double max_length);
@@ -142,7 +194,11 @@ private:
   std::vector<Voxel> voxels_;
   double voxel_width_;
   Eigen::Vector3i voxel_dims_;
+  ElementDistribution distribution_;
+  double min_g_;  // rays with G below this are ignored
+  size_t num_ignored_rays_ = 0;
   bool bounded_;
+  double ray_g_;  // G function value of the ray currently being walked
 
   // used when waling the grid
   Eigen::Vector3d source_;
@@ -152,7 +208,7 @@ private:
 // inline functions
 double DensityGrid::Voxel::numerator() const
 {
-  return spherical_distribution_scale * (num_rays_ - 1.0) * num_hits_;
+  return (num_rays_ - 1.0) * num_hits_;
 }
 double DensityGrid::Voxel::denominator() const
 {
@@ -167,7 +223,7 @@ double DensityGrid::Voxel::density() const
   }
   const double eps = 1e-10;  // avoid division by 0
   // below -1.0 should be -2.0 when min length is estimated (e.g. when initially air)
-  return spherical_distribution_scale * (num_rays_ - 1.0) * num_hits_ / (eps + num_rays_ * path_length_);
+  return (num_rays_ - 1.0) * num_hits_ / (eps + num_rays_ * path_length_);
 }
 void DensityGrid::Voxel::operator+=(const DensityGrid::Voxel &other)
 {
@@ -227,11 +283,11 @@ inline bool DensityGrid::operator()(const Eigen::Vector3i &p, const Eigen::Vecto
   if (p == target && bounded_)
   {
     double length_in_voxel = end_length - in_length;
-    voxels_[index].addHitRay(static_cast<float>(length_in_voxel * voxel_width_));
+    voxels_[index].addHitRay(static_cast<float>(ray_g_ * length_in_voxel * voxel_width_));
   }
   else
   {
-    voxels_[index].addMissRay(static_cast<float>((out_length - in_length) * voxel_width_));
+    voxels_[index].addMissRay(static_cast<float>(ray_g_ * (out_length - in_length) * voxel_width_));
   }
   return false;
 }

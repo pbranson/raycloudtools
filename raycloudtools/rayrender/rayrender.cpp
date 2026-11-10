@@ -41,6 +41,11 @@ void usage(int exit_code = 1)
   std::cout << "                     --georeference name.proj- projection file name, to output (geo)tif file. " << std::endl;
   std::cout << "                     --pixel_width 0.1     - optional pixel width in m, instead of resolution" << std::endl;
   std::cout << "                     --grid_width 100      - optionally bound to a grid cell width such that one cell centre is 0,0" << std::endl;
+  std::cout << "                     --density_model vertical_cylinder - for density styles: model elements as vertical" << std::endl;
+  std::cout << "                                             cylinders (e.g. pneumatophores), giving frontal area per" << std::endl;
+  std::cout << "                                             volume N*d (1/m). Default: spherical (leaf area per volume)" << std::endl;
+  std::cout << "                     --min_sin_zenith 0.1  - vertical_cylinder only: ignore rays steeper than this" << std::endl;
+  std::cout << "                     --profile name.csv    - for density styles: output mean density per height layer" << std::endl;
   std::cout << "Default output is raycloudfile.png" << std::endl;
   // clang-format on
   exit(exit_code);
@@ -50,9 +55,10 @@ int rayRender(int argc, char *argv[])
 {
   ray::KeyChoice viewpoint({ "top", "left", "right", "front", "back" });
   ray::KeyChoice style({ "ends", "mean", "sum", "starts", "rays", "height", "density", "density_rgb" });
-  ray::DoubleArgument pixel_width(0.0001, 1000.0), grid_width(0.01, 1000000.0);
+  ray::DoubleArgument pixel_width(0.0001, 1000.0), grid_width(0.01, 1000000.0), min_sin_zenith(0.0, 1.0);
+  ray::KeyChoice density_model({ "spherical", "vertical_cylinder" });
   ray::IntArgument resolution(1, 20000, 512);
-  ray::FileArgument cloud_file, image_file, transform_file, projection_file(false);
+  ray::FileArgument cloud_file, image_file, transform_file, projection_file(false), profile_file(false);
   ray::OptionalFlagArgument mark_origin("mark_origin", 'm'), view_flag("view", 'v');
   ray::OptionalKeyValueArgument resolution_option("resolution", 'r', &resolution);
   ray::OptionalKeyValueArgument pixel_width_option("pixel_width", 'p', &pixel_width);
@@ -60,11 +66,29 @@ int rayRender(int argc, char *argv[])
   ray::OptionalKeyValueArgument output_file_option("output", 'o', &image_file);
   ray::OptionalKeyValueArgument projection_file_option("georeference", 'g', &projection_file);
   ray::OptionalKeyValueArgument transform_file_option("output_transform", 't', &transform_file);
+  ray::OptionalKeyValueArgument density_model_option("density_model", 'd', &density_model);
+  ray::OptionalKeyValueArgument min_sin_zenith_option("min_sin_zenith", 'z', &min_sin_zenith);
+  ray::OptionalKeyValueArgument profile_file_option("profile", 'f', &profile_file);
   if (!ray::parseCommandLine(argc, argv, { &cloud_file, &viewpoint, &style },
                              { &resolution_option, &pixel_width_option, &output_file_option, &view_flag, &mark_origin,
-                               &transform_file_option, &grid_width_option, &projection_file_option }))
+                               &transform_file_option, &grid_width_option, &projection_file_option,
+                               &density_model_option, &min_sin_zenith_option, &profile_file_option }))
   {
     usage();
+  }
+  ray::DensityOptions density_options;
+  if (density_model_option.isSet())
+  {
+    // the text and enums are in the same order
+    density_options.distribution = static_cast<ray::ElementDistribution>(density_model.selectedID());
+  }
+  if (min_sin_zenith_option.isSet())
+  {
+    density_options.min_sin_zenith = min_sin_zenith.value();
+  }
+  if (profile_file_option.isSet())
+  {
+    density_options.profile_file = profile_file.name();
   }
   if (!output_file_option.isSet())
   {
@@ -139,7 +163,7 @@ int rayRender(int argc, char *argv[])
 
   if (!ray::renderCloud(cloud_file.name(), bounds, view_dir, render_style, pix_width, image_file.name(),
                         projection_file.name(), mark_origin.isSet(),
-                        transform_file_option.isSet() ? &transform_file.name() : nullptr))
+                        transform_file_option.isSet() ? &transform_file.name() : nullptr, density_options))
   {
     usage();
   }

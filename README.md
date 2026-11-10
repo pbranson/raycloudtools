@@ -201,6 +201,8 @@ This gives an example of how the command line tools could be sequenced to analys
 <img img width="320" src="https://raw.githubusercontent.com/csiro-robotics/raycloudtools/main/pics/rayrender_room_top_density_rgb.png?at=refs%2Fheads%2Fmaster"/>
 </p>
 
+By default density assumes a spherical (isotropic) distribution of leaf angles (G = 0.5), giving leaf area per volume. For vertical stem-like elements such as mangrove pneumatophores, use `--density_model vertical_cylinder`. This applies G = sin(zenith) to each ray, so density is the frontal area per volume N·d (stems per m² × diameter, in m⁻¹), and pixel values are the frontal area index N·d·h. `--profile profile.csv` writes the mean density per height layer. Ground returns should be removed first (e.g. `rayextract terrain`, then set ground rays to zero alpha), so that they are treated as unobstructed rays rather than hits.
+
 **raytransients min room.ply 2 rays** &nbsp;&nbsp;&nbsp; Segment out moving or moved objects during the scan, when matter has been re-observed as missing by 2 or more rays.
 
 &nbsp;&nbsp;&nbsp; Leaving the ***minimum*** of geometry when transient.

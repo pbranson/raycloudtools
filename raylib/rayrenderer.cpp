@@ -456,8 +456,8 @@ void DensityGrid::calculatePeaks(const std::string &file_name)
   Cloud::read(file_name, calc_peaks);
 }
 
-/// Calculate the surface area per cubic metre within each voxel of the grid. Assuming an unbiased distribution
-/// of surface angles.
+/// Calculate the density within each voxel of the grid: by default the surface area per cubic metre, assuming an
+/// unbiased distribution of surface angles. See @c ElementDistribution for the alternatives.
 void DensityGrid::calculateDensities(const std::string &file_name)
 {
   auto calculate = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends, std::vector<double> &,
@@ -475,6 +475,12 @@ void DensityGrid::calculateDensities(const std::string &file_name)
       const Eigen::Vector3d vox_end = (end - bounds_.min_bound_) / voxel_width_;
       source_ = vox_start;
       dir_ = (vox_end - vox_start).normalized();
+      ray_g_ = gFunction(distribution_, dir_);
+      if (ray_g_ < min_g_ || ray_g_ <= 0.0)
+      {
+        num_ignored_rays_++;  // selecting rays on direction alone doesn't bias the estimate
+        continue;
+      }
       walkGrid(vox_start, vox_end, *this);
     }
   };
@@ -607,9 +613,48 @@ void DensityGrid::addNeighbourPriors()
 #endif
 }
 
+/// Writes the mean voxel density of each horizontal layer of the grid to a .csv file.
+/// Only voxels with sufficient rays are included, so unobserved space (e.g. below the ground) is excluded.
+/// @c dims are the valid dimensions, where voxel z spans heights base_height + pix_width * [z, z+1]
+static bool writeDensityProfile(const std::string &file_name, const DensityGrid &grid, const Eigen::Vector3i &dims,
+                                double base_height, double pix_width)
+{
+  std::ofstream ofs(file_name.c_str(), std::ios::out);
+  if (!ofs.is_open())
+  {
+    std::cerr << "Error: cannot open " << file_name << " for writing" << std::endl;
+    return false;
+  }
+  const bool cylinders = grid.distribution() == ElementDistribution::VerticalCylinder;
+  ofs << "z_min,z_max,observed_voxels,total_voxels,mean_density"
+      << (cylinders ? "_frontal_area_per_volume_Nd" : "_leaf_area_per_volume") << std::endl;
+  for (int z = 0; z < dims[2]; z++)
+  {
+    double sum = 0.0;
+    int count = 0;
+    for (int x = 0; x < dims[0]; x++)
+    {
+      for (int y = 0; y < dims[1]; y++)
+      {
+        const DensityGrid::Voxel &voxel = grid.voxels()[grid.getIndex(Eigen::Vector3i(x, y, z))];
+        if (voxel.numRays() > DensityGrid::min_voxel_hits)
+        {
+          sum += voxel.density();
+          count++;
+        }
+      }
+    }
+    const double z_min = base_height + pix_width * static_cast<double>(z);
+    ofs << z_min << "," << z_min + pix_width << "," << count << "," << dims[0] * dims[1] << ","
+        << (count > 0 ? sum / static_cast<double>(count) : 0.0) << std::endl;
+  }
+  std::cout << "density profile written to " << file_name << std::endl;
+  return true;
+}
+
 bool renderCloud(const std::string &cloud_file, const Cuboid &bounds, ViewDirection view_direction, RenderStyle style,
                  double pix_width, const std::string &image_file, const std::string &projection_file, bool mark_origin,
-                 const std::string *const transform_file)
+                 const std::string *const transform_file, const DensityOptions &density_options)
 {
   // convert the view direction into useable parameters
   int axis = 0;
@@ -650,18 +695,35 @@ bool renderCloud(const std::string &cloud_file, const Cuboid &bounds, ViewDirect
       dims += 2 * Eigen::Vector3i(shift, shift, shift);  // so that we have extra space to convolve
       grid_bounds.min_bound_ -= Eigen::Vector3d(pix_width, pix_width, pix_width);
 #endif
-      DensityGrid grid(grid_bounds, pix_width, dims);
+      const bool cylinders = density_options.distribution == ElementDistribution::VerticalCylinder;
+      DensityGrid grid(grid_bounds, pix_width, dims, density_options.distribution,
+                       cylinders ? density_options.min_sin_zenith : 0.0);
 
 #if defined FLAT_TOP_COMPENSATION
       grid.calculatePeaks(cloud_file);
 #endif
       grid.calculateDensities(cloud_file);
+      if (grid.numIgnoredRays() > 0)
+      {
+        std::cout << grid.numIgnoredRays() << " near-vertical rays ignored (sin zenith angle < "
+                  << density_options.min_sin_zenith << ")" << std::endl;
+      }
 #if defined FLAT_TOP_COMPENSATION
       grid.flatTopCompensation();
 #endif
 #if DENSITY_MIN_RAYS > 0
       grid.addNeighbourPriors();
 #endif
+      if (!density_options.profile_file.empty())
+      {
+        // addNeighbourPriors shifts the voxel contents by -shift in each axis, so these are the valid dimensions,
+        // with index 0 at bounds.min_bound_
+        const Eigen::Vector3i valid_dims = dims - 2 * Eigen::Vector3i(shift, shift, shift);
+        if (!writeDensityProfile(density_options.profile_file, grid, valid_dims, bounds.min_bound_[2], pix_width))
+        {
+          return false;
+        }
+      }
       double foliage_area = 0.0;
       for (int x = 0; x < width; x++)
       {
@@ -691,7 +753,14 @@ bool renderCloud(const std::string &cloud_file, const Cuboid &bounds, ViewDirect
           pixels[x + width * y] = Eigen::Vector4d(total_density, total_density, total_density, total_density);
         }
       }
-      std::cout << "total foliage area: " << foliage_area << " m^2" << std::endl;
+      if (cylinders)
+      {
+        std::cout << "total frontal area (sum of N d h): " << foliage_area << " m^2" << std::endl;
+      }
+      else
+      {
+        std::cout << "total foliage area: " << foliage_area << " m^2" << std::endl;
+      }
     }
     else  // otherwise we use a common algorithm, specialising on render style only per-ray
     {

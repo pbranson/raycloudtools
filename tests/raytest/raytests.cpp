@@ -22,7 +22,10 @@
 #include "raylib/raylaz.h"
 #include "raylib/raymesh.h"
 #include "raylib/rayply.h"
+#include "raylib/rayrenderer.h"
 #include "raylib/raythreads.h"
+
+#include <random>
 
 #include "environment.h"
 
@@ -384,6 +387,138 @@ TEST(Basic, RayTranslate)
                                          33.0883,  6.10555, 5.82564,  3.20507,  62.683,   36.1903, 0.514327, 0.504407,
                                          0.413534, 1,       0.372377, 0.365965, 0.391709, 0 }),
     cloud.getMoments().size());
+}
+
+/// Generates a ray cloud of rays at a fixed zenith angle through a random (Poisson) field of vertical cylinders
+/// of diameter @c diameter and @c stems_per_m2 per square metre. Returns the cloud, with each ray ending at its
+/// first cylinder intersection (bounded) or at its maximum length (unbounded)
+ray::Cloud generateCylinderFieldCloud(double zenith_deg, double stems_per_m2, double diameter, int num_rays,
+                                      unsigned seed)
+{
+  std::mt19937 gen(seed);
+  std::uniform_real_distribution<double> uniform(0.0, 1.0);
+  const double field_min = -2.0, field_max = 6.0;  // cylinders extend beyond where rays can reach
+  const double cell = 0.5;                         // bucket grid of cylinder centres, to accelerate intersection
+  const int cells = static_cast<int>((field_max - field_min) / cell);
+  std::vector<std::vector<Eigen::Vector2d>> buckets(static_cast<size_t>(cells * cells));
+  const int num_stems = static_cast<int>(stems_per_m2 * (field_max - field_min) * (field_max - field_min));
+  for (int i = 0; i < num_stems; i++)
+  {
+    Eigen::Vector2d c(field_min + (field_max - field_min) * uniform(gen),
+                      field_min + (field_max - field_min) * uniform(gen));
+    int bx = std::min(cells - 1, static_cast<int>((c[0] - field_min) / cell));
+    int by = std::min(cells - 1, static_cast<int>((c[1] - field_min) / cell));
+    buckets[static_cast<size_t>(bx + cells * by)].push_back(c);
+  }
+  const double radius = 0.5 * diameter;
+  const double max_length = 1.5;
+  const double theta = zenith_deg * ray::kPi / 180.0;
+  ray::Cloud cloud;
+  int ray_count = 0;
+  while (ray_count < num_rays)
+  {
+    const Eigen::Vector3d start(0.5 + 3.0 * uniform(gen), 0.5 + 3.0 * uniform(gen), 1.5 + uniform(gen));
+    const double phi = 2.0 * ray::kPi * uniform(gen);
+    const Eigen::Vector3d dir(std::sin(theta) * std::cos(phi), std::sin(theta) * std::sin(phi), -std::cos(theta));
+    const Eigen::Vector2d s2(start[0], start[1]);
+    const Eigen::Vector2d d2(dir[0], dir[1]);
+    const double h2 = d2.squaredNorm();
+    const Eigen::Vector2d e2 = s2 + d2 * max_length;
+    const int x0 = static_cast<int>((std::min(s2[0], e2[0]) - radius - field_min) / cell);
+    const int x1 = static_cast<int>((std::max(s2[0], e2[0]) + radius - field_min) / cell);
+    const int y0 = static_cast<int>((std::min(s2[1], e2[1]) - radius - field_min) / cell);
+    const int y1 = static_cast<int>((std::max(s2[1], e2[1]) + radius - field_min) / cell);
+    double hit_length = max_length;
+    bool inside = false;
+    for (int x = x0; x <= x1; x++)
+    {
+      for (int y = y0; y <= y1; y++)
+      {
+        for (const auto &c : buckets[static_cast<size_t>(x + cells * y)])
+        {
+          const Eigen::Vector2d to = c - s2;
+          if (to.squaredNorm() < radius * radius)
+          {
+            inside = true;
+          }
+          if (h2 <= 0.0)
+          {
+            continue;
+          }
+          // solve |s2 + t d2 - c| = radius for the smallest t > 0
+          const double b = to.dot(d2);
+          const double disc = b * b - h2 * (to.squaredNorm() - radius * radius);
+          if (disc < 0.0)
+          {
+            continue;
+          }
+          const double t = (b - std::sqrt(disc)) / h2;
+          if (t > 0.0 && t < hit_length)
+          {
+            hit_length = t;
+          }
+        }
+      }
+    }
+    if (inside)
+    {
+      continue;  // a scanner can't start inside a stem
+    }
+    const bool hit = hit_length < max_length;
+    cloud.addRay(start, start + dir * hit_length, static_cast<double>(ray_count),
+                 ray::RGBA(127, 127, 127, hit ? 255 : 0));
+    ray_count++;
+  }
+  return cloud;
+}
+
+/// Returns the mean voxel density over the voxels that have sufficient rays
+double meanVoxelDensity(const std::string &cloud_file, ray::ElementDistribution distribution)
+{
+  const double vox_width = 0.5;
+  ray::Cuboid bounds(Eigen::Vector3d(0.5, 0.5, 0.5), Eigen::Vector3d(3.5, 3.5, 2.5));
+  const Eigen::Vector3i dims(6, 6, 4);
+  ray::DensityGrid grid(bounds, vox_width, dims, distribution);
+  grid.calculateDensities(cloud_file);
+  double sum = 0.0;
+  int count = 0;
+  for (const auto &voxel : grid.voxels())
+  {
+    if (voxel.numRays() > 100)
+    {
+      sum += voxel.density();
+      count++;
+    }
+  }
+  EXPECT_GT(count, 20);
+  return count > 0 ? sum / static_cast<double>(count) : 0.0;
+}
+
+/// Monte-Carlo verification of the vertical cylinder G function: the frontal area per volume N*d of a random field
+/// of vertical cylinders should be recovered regardless of the ray zenith angle. The spherical (isotropic leaf)
+/// model, by contrast, gives a result proportional to sin(zenith).
+TEST(Basic, RayDensityVerticalCylinders)
+{
+  const double stems_per_m2 = 100.0;
+  const double diameter = 0.01;
+  const double frontal_area_density = stems_per_m2 * diameter;  // a = N d = 1 m^-1
+  const double zeniths[] = { 15.0, 45.0, 80.0, 90.0 };
+  unsigned seed = 1;
+  for (const double zenith : zeniths)
+  {
+    ray::Cloud cloud = generateCylinderFieldCloud(zenith, stems_per_m2, diameter, 100000, seed++);
+    const std::string file_name = "density_cylinders.ply";
+    cloud.save(file_name);
+    const double cylinder_estimate = meanVoxelDensity(file_name, ray::ElementDistribution::VerticalCylinder);
+    const double spherical_estimate = meanVoxelDensity(file_name, ray::ElementDistribution::Spherical);
+    const double sin_zenith = std::sin(zenith * ray::kPi / 180.0);
+    std::cout << "zenith " << zenith << " deg: true N*d = " << frontal_area_density
+              << ", vertical cylinder estimate = " << cylinder_estimate
+              << ", spherical estimate = " << spherical_estimate << std::endl;
+    EXPECT_NEAR(cylinder_estimate, frontal_area_density, 0.1 * frontal_area_density);
+    // spherical model returns 2 * G * a with G = sin(zenith)
+    EXPECT_NEAR(spherical_estimate, 2.0 * sin_zenith * frontal_area_density, 0.2 * frontal_area_density);
+  }
 }
 
 #if RAYLIB_WITH_QHULL
