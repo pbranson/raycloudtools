@@ -63,7 +63,8 @@ struct RAYLIB_EXPORT PneumatophoreParams
 /// sequential addition (jamming) limit of 0.547 for discs
 static constexpr double max_solid_fraction = 0.5;
 
-/// Generates a synthetic pneumatophore field and its ray cloud. Stems are coloured green, ground returns brown
+/// Generates a synthetic pneumatophore field and its ray cloud. Stem returns are coloured green, ground returns
+/// brown and rays with no return grey
 class RAYLIB_EXPORT PneumatophoreGen
 {
 public:
@@ -76,6 +77,9 @@ public:
 
   /// The true frontal area per unit volume N d, averaged over each height layer within the plot, as a .csv file
   bool writeTruthProfile(const std::string &file_name, double layer_width) const;
+
+  /// The stems as a .csv file of x, y, height, with the stem diameter
+  bool writeStems(const std::string &file_name) const;
 
   /// The true N d averaged over each cell of size @c cell_size, tiling the plot from (-w/2, -w/2, 0) for plot width w.
   /// Written as a .csv file

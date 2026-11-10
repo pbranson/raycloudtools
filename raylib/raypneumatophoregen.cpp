@@ -278,7 +278,7 @@ void PneumatophoreGen::generate(const PneumatophoreParams &params, unsigned int 
   const int num_lines = std::max(1, static_cast<int>(params_.plot_width / params_.walk_spacing));
   const double path_length = params_.plot_width * num_lines;
   cloud_.clear();
-  const RGBA stem_colour(40, 160, 40, 255), ground_colour(120, 80, 40, 255);
+  const RGBA stem_colour(40, 160, 40, 255), ground_colour(120, 80, 40, 255), none_colour(128, 128, 128, 0);
   int num_stem_hits = 0, num_ground_hits = 0;
   for (int i = 0; i < params_.num_rays; i++)
   {
@@ -304,7 +304,8 @@ void PneumatophoreGen::generate(const PneumatophoreParams &params, unsigned int 
     double length;
     bool hit_stem, hit_ground;
     castRay(start, dir, length, hit_stem, hit_ground);
-    RGBA colour = hit_stem ? stem_colour : ground_colour;
+    // stems green, ground brown, and rays with no return (at maximum range) grey
+    RGBA colour = hit_stem ? stem_colour : (hit_ground ? ground_colour : none_colour);
     if (!hit_stem && (!hit_ground || params_.ground_unbounded))
     {
       colour.alpha = 0;
@@ -458,6 +459,22 @@ bool PneumatophoreGen::writeTruthProfile(const std::string &file_name, double la
             << num_stems / area << " stems per m^2) written to " << file_name << std::endl;
   return true;
 }
+bool PneumatophoreGen::writeStems(const std::string &file_name) const
+{
+  std::ofstream ofs(file_name.c_str(), std::ios::out);
+  if (!ofs.is_open())
+  {
+    std::cerr << "Error: cannot open " << file_name << " for writing" << std::endl;
+    return false;
+  }
+  ofs << "x,y,height,diameter" << std::endl;
+  for (const auto &stem : stems_)
+  {
+    ofs << stem[0] << "," << stem[1] << "," << stem[2] << "," << params_.diameter << std::endl;
+  }
+  return true;
+}
+
 bool PneumatophoreGen::writeTruthCells(const std::string &file_name, const Eigen::Vector3d &cell_size) const
 {
   std::ofstream ofs(file_name.c_str(), std::ios::out);

@@ -29,7 +29,8 @@ void usage(int exit_code = 1)
   std::cout << "          terrain" << std::endl;
   std::cout << "          field" << std::endl;
   std::cout << "          pneumatophores - vertical stems on flat ground, scanned by a hand-held lidar. Also outputs" << std::endl;
-  std::cout << "                           pneumatophores_truth.csv, the true frontal area per volume N*d profile" << std::endl;
+  std::cout << "                           pneumatophores_truth.csv, the true frontal area per volume N*d profile," << std::endl;
+  std::cout << "                           and pneumatophores_stems.csv, the stem positions and heights" << std::endl;
   std::cout << "             --stems_per_m2 100     - mean stem density" << std::endl;
   std::cout << "             --diameter 0.01        - stem diameter (m)" << std::endl;
   std::cout << "             --clustered            - stems along cable roots radiating from trees, else random" << std::endl;
@@ -318,6 +319,10 @@ int rayCreate(int argc, char *argv[])
     }
     cloud = gen.cloud();
     if (!gen.writeTruthProfile(type + "_truth.csv", 0.01))
+    {
+      return 1;
+    }
+    if (!gen.writeStems(type + "_stems.csv"))
     {
       return 1;
     }
