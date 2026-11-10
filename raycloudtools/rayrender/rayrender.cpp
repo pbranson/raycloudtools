@@ -46,6 +46,17 @@ void usage(int exit_code = 1)
   std::cout << "                                             volume N*d (1/m). Default: spherical (leaf area per volume)" << std::endl;
   std::cout << "                     --min_sin_zenith 0.1  - vertical_cylinder only: ignore rays steeper than this" << std::endl;
   std::cout << "                     --profile name.csv    - for density styles: output mean density per height layer" << std::endl;
+  std::cout << "                     --stem_diameter 0.01  - vertical_cylinder only: mean true stem diameter (m)," << std::endl;
+  std::cout << "                     --footprint 0.01,0.003,0.05 - with beam exit diameter (m), full divergence (rad)" << std::endl;
+  std::cout << "                                             and detection threshold (fraction of beam power), to" << std::endl;
+  std::cout << "                                             correct for the beam footprint widening thin stems" << std::endl;
+  std::cout << "                     --estimator crossing  - for density styles: count hit rays' path to the voxel" << std::endl;
+  std::cout << "                                             exit. Exact for few, discrete elements per voxel (small" << std::endl;
+  std::cout << "                                             voxels). Default beer_lambert: path to hit (turbid medium)" << std::endl;
+  std::cout << "                     --no_flat_top         - for density styles: disable the flat canopy top model" << std::endl;
+  std::cout << "                                             (designed for grass/crops, it biases uneven stems)" << std::endl;
+  std::cout << "                     --min_bound x,y,z     - optional bounds of the region to render, otherwise" << std::endl;
+  std::cout << "                     --max_bound x,y,z       the bounds of the ray end points" << std::endl;
   std::cout << "Default output is raycloudfile.png" << std::endl;
   // clang-format on
   exit(exit_code);
@@ -57,9 +68,12 @@ int rayRender(int argc, char *argv[])
   ray::KeyChoice style({ "ends", "mean", "sum", "starts", "rays", "height", "density", "density_rgb" });
   ray::DoubleArgument pixel_width(0.0001, 1000.0), grid_width(0.01, 1000000.0), min_sin_zenith(0.0, 1.0);
   ray::KeyChoice density_model({ "spherical", "vertical_cylinder" });
+  ray::KeyChoice estimator({ "beer_lambert", "crossing" });
+  ray::DoubleArgument stem_diameter(0.0001, 10.0);
+  ray::Vector3dArgument footprint(0.0, 1.0), min_bound(-1e10, 1e10), max_bound(-1e10, 1e10);
   ray::IntArgument resolution(1, 20000, 512);
   ray::FileArgument cloud_file, image_file, transform_file, projection_file(false), profile_file(false);
-  ray::OptionalFlagArgument mark_origin("mark_origin", 'm'), view_flag("view", 'v');
+  ray::OptionalFlagArgument mark_origin("mark_origin", 'm'), view_flag("view", 'v'), no_flat_top("no_flat_top", 'u');
   ray::OptionalKeyValueArgument resolution_option("resolution", 'r', &resolution);
   ray::OptionalKeyValueArgument pixel_width_option("pixel_width", 'p', &pixel_width);
   ray::OptionalKeyValueArgument grid_width_option("grid_width", 'g', &grid_width);
@@ -69,14 +83,26 @@ int rayRender(int argc, char *argv[])
   ray::OptionalKeyValueArgument density_model_option("density_model", 'd', &density_model);
   ray::OptionalKeyValueArgument min_sin_zenith_option("min_sin_zenith", 'z', &min_sin_zenith);
   ray::OptionalKeyValueArgument profile_file_option("profile", 'f', &profile_file);
-  if (!ray::parseCommandLine(argc, argv, { &cloud_file, &viewpoint, &style },
-                             { &resolution_option, &pixel_width_option, &output_file_option, &view_flag, &mark_origin,
-                               &transform_file_option, &grid_width_option, &projection_file_option,
-                               &density_model_option, &min_sin_zenith_option, &profile_file_option }))
+  ray::OptionalKeyValueArgument estimator_option("estimator", 'e', &estimator);
+  ray::OptionalKeyValueArgument stem_diameter_option("stem_diameter", 's', &stem_diameter);
+  ray::OptionalKeyValueArgument footprint_option("footprint", 'b', &footprint);
+  ray::OptionalKeyValueArgument min_bound_option("min_bound", 'n', &min_bound);
+  ray::OptionalKeyValueArgument max_bound_option("max_bound", 'x', &max_bound);
+  if (!ray::parseCommandLine(
+        argc, argv, { &cloud_file, &viewpoint, &style },
+        { &resolution_option, &pixel_width_option, &output_file_option, &view_flag, &mark_origin,
+          &transform_file_option, &grid_width_option, &projection_file_option, &density_model_option,
+          &min_sin_zenith_option, &profile_file_option, &stem_diameter_option, &footprint_option, &min_bound_option,
+          &max_bound_option, &no_flat_top, &estimator_option }))
   {
     usage();
   }
   ray::DensityOptions density_options;
+  density_options.flat_top_compensation = !no_flat_top.isSet();
+  if (estimator_option.isSet())
+  {
+    density_options.path_estimator = static_cast<ray::PathEstimator>(estimator.selectedID());
+  }
   if (density_model_option.isSet())
   {
     // the text and enums are in the same order
@@ -89,6 +115,21 @@ int rayRender(int argc, char *argv[])
   if (profile_file_option.isSet())
   {
     density_options.profile_file = profile_file.name();
+  }
+  if (stem_diameter_option.isSet())
+  {
+    density_options.stem_diameter = stem_diameter.value();
+  }
+  if (footprint_option.isSet())
+  {
+    density_options.footprint.exit_diameter = footprint.value()[0];
+    density_options.footprint.divergence = footprint.value()[1];
+    density_options.footprint.threshold = footprint.value()[2];
+    if (density_options.distribution != ray::ElementDistribution::VerticalCylinder || !stem_diameter_option.isSet())
+    {
+      std::cerr << "Error: --footprint requires --density_model vertical_cylinder and --stem_diameter" << std::endl;
+      usage();
+    }
   }
   if (!output_file_option.isSet())
   {
@@ -120,7 +161,20 @@ int rayRender(int argc, char *argv[])
     usage();
   }
   ray::Cuboid bounds = info.ends_bound;  // exclude the unbounded ray lengths (e.g. up into the sky)
-  if (grid_width_option.isSet())         // adjust min_bound to be well-aligned
+  if (min_bound_option.isSet())
+  {
+    bounds.min_bound_ = min_bound.value();
+  }
+  if (max_bound_option.isSet())
+  {
+    bounds.max_bound_ = max_bound.value();
+  }
+  if ((bounds.max_bound_.array() <= bounds.min_bound_.array()).any())
+  {
+    std::cerr << "Error: max_bound must be greater than min_bound in each axis" << std::endl;
+    usage();
+  }
+  if (grid_width_option.isSet())  // adjust min_bound to be well-aligned
   {
     Eigen::Vector3d mid = (bounds.min_bound_ + bounds.max_bound_) / 2.0;
     Eigen::Vector3d min_bound = bounds.min_bound_;

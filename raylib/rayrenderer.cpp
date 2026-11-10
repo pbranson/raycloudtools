@@ -8,7 +8,7 @@
 #include "raycloud.h"
 #include "raylib/raylibconfig.h"
 #include "rayparse.h"
-#if RAYLIB_WITH_TIFF           // build option to support outputting to geotif (.tif) format
+#if RAYLIB_WITH_TIFF   // build option to support outputting to geotif (.tif) format
 #include "geotiffio.h" /* for GeoTIFF */
 #include "xtiffio.h"   /* for TIFF */
 #endif
@@ -431,6 +431,90 @@ bool writeGeoTiffFloat(const std::string &filename, int x, int y, const float *d
 }
 #endif
 
+double stripInterceptFraction(double width, double beam_diameter, double offset)
+{
+  if (beam_diameter <= 0.0)
+  {
+    return std::abs(offset) < 0.5 * width ? 1.0 : 0.0;
+  }
+  // the 1/e^2 diameter is 4 standard deviations. The power across the strip is the 1D marginal of the 2D Gaussian
+  const double sigma = 0.25 * beam_diameter;
+  const double scale = 1.0 / (std::sqrt(2.0) * sigma);
+  return 0.5 * (std::erf((offset + 0.5 * width) * scale) - std::erf((offset - 0.5 * width) * scale));
+}
+
+double effectiveStemWidth(double diameter, double beam_diameter, double threshold)
+{
+  if (beam_diameter <= 0.0)
+  {
+    return threshold <= 1.0 ? diameter : 0.0;
+  }
+  if (stripInterceptFraction(diameter, beam_diameter, 0.0) < threshold)
+  {
+    return 0.0;  // never intercepts enough of the beam to be detected
+  }
+  // the intercepted fraction decreases monotonically with offset, so bisect for where it equals the threshold
+  double low = 0.0;
+  double high = 0.5 * diameter + 4.0 * beam_diameter;
+  for (int i = 0; i < 60; i++)
+  {
+    const double mid = 0.5 * (low + high);
+    if (stripInterceptFraction(diameter, beam_diameter, mid) >= threshold)
+    {
+      low = mid;
+    }
+    else
+    {
+      high = mid;
+    }
+  }
+  return 2.0 * low;
+}
+
+StemWidthModel::StemWidthModel(double diameter, const BeamFootprint &footprint)
+  : diameter_(diameter)
+  , footprint_(footprint)
+  , enabled_(diameter > 0.0 && footprint.enabled())
+{
+  if (!enabled_)
+  {
+    return;
+  }
+  const int num = static_cast<int>(table_max_range_ / table_step_) + 1;
+  table_.resize(static_cast<size_t>(num));
+  for (int i = 0; i < num; i++)
+  {
+    table_[static_cast<size_t>(i)] =
+      effectiveStemWidth(diameter_, footprint_.diameter(table_step_ * static_cast<double>(i)), footprint_.threshold);
+  }
+}
+
+double StemWidthModel::width(double range) const
+{
+  if (!enabled_)
+  {
+    return diameter_;
+  }
+  const double x = std::max(0.0, range) / table_step_;
+  const size_t i = static_cast<size_t>(x);
+  if (i + 1 >= table_.size())
+  {
+    return effectiveStemWidth(diameter_, footprint_.diameter(range), footprint_.threshold);
+  }
+  const double blend = x - static_cast<double>(i);
+  return table_[i] * (1.0 - blend) + table_[i + 1] * blend;
+}
+
+double StemWidthModel::maxWidth(double max_range) const
+{
+  double max_width = diameter_;
+  for (double range = 0.0; range <= max_range; range += table_step_)
+  {
+    max_width = std::max(max_width, width(range));
+  }
+  return max_width;
+}
+
 void DensityGrid::calculatePeaks(const std::string &file_name)
 {
   auto calc_peaks = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends, std::vector<double> &,
@@ -474,6 +558,7 @@ void DensityGrid::calculateDensities(const std::string &file_name)
       // it, so it is treated as a miss. Otherwise its hit would be wrongly counted in the boundary voxel.
       const double clip_tolerance = 1e-6;
       const bool end_clipped = (end - ends[i]).squaredNorm() > clip_tolerance * clip_tolerance;
+      range_offset_ = (start - starts[i]).norm();
       bounded_ = colours[i].alpha > 0 && !end_clipped;
       const Eigen::Vector3d vox_start = (start - bounds_.min_bound_) / voxel_width_;
       const Eigen::Vector3d vox_end = (end - bounds_.min_bound_) / voxel_width_;
@@ -617,11 +702,15 @@ void DensityGrid::addNeighbourPriors()
 #endif
 }
 
-/// Writes the mean voxel density of each horizontal layer of the grid to a .csv file.
+/// Writes the density of each horizontal layer of the grid to a .csv file, both as the mean of the voxel densities
+/// and as the pooled estimate (total hits over total G-weighted path length) across the layer.
+/// The mean of voxel densities is biased high when voxels contain few hits (around +10% at 2-3 hits per voxel), so
+/// the mean hits per voxel is also output. The pooled estimate avoids this bias, but weights voxels by path length.
 /// Only voxels with sufficient rays are included, so unobserved space (e.g. below the ground) is excluded.
 /// @c dims are the valid dimensions, where voxel z spans heights base_height + pix_width * [z, z+1]
+/// @c shift is the voxel shift applied by addNeighbourPriors, and @c full_dims the full grid dimensions
 static bool writeDensityProfile(const std::string &file_name, const DensityGrid &grid, const Eigen::Vector3i &dims,
-                                double base_height, double pix_width)
+                                const Eigen::Vector3i &full_dims, int shift, double base_height, double pix_width)
 {
   std::ofstream ofs(file_name.c_str(), std::ios::out);
   if (!ofs.is_open())
@@ -630,11 +719,13 @@ static bool writeDensityProfile(const std::string &file_name, const DensityGrid 
     return false;
   }
   const bool cylinders = grid.distribution() == ElementDistribution::VerticalCylinder;
-  ofs << "z_min,z_max,observed_voxels,total_voxels,mean_density"
-      << (cylinders ? "_frontal_area_per_volume_Nd" : "_leaf_area_per_volume") << std::endl;
+  const std::string label = cylinders ? "_frontal_area_per_volume_Nd" : "_leaf_area_per_volume";
+  ofs << "z_min,z_max,observed_voxels,total_voxels,mean_hits_per_voxel,mean_density" << label << ",pooled_density"
+      << label << std::endl;
   for (int z = 0; z < dims[2]; z++)
   {
     double sum = 0.0;
+    double hits = 0.0, path_length = 0.0;
     int count = 0;
     for (int x = 0; x < dims[0]; x++)
     {
@@ -643,14 +734,29 @@ static bool writeDensityProfile(const std::string &file_name, const DensityGrid 
         const DensityGrid::Voxel &voxel = grid.voxels()[grid.getIndex(Eigen::Vector3i(x, y, z))];
         if (voxel.numRays() > DensityGrid::min_voxel_hits)
         {
-          sum += voxel.density();
+          double d = voxel.density();
+#if defined FLAT_TOP_COMPENSATION
+          // the top voxel's density is estimated for the part below the column's highest point, so scale it to
+          // the voxel average, as is done for the rendered image
+          const double p = grid.peaks_[static_cast<size_t>((x + shift) + full_dims[0] * (y + shift))];
+          const int top_z = p < -10000.0 ? -1 : static_cast<int>(std::floor(p));
+          if (z == top_z - shift)
+          {
+            d *= p - static_cast<double>(top_z);
+          }
+#endif
+          sum += d;
           count++;
+          hits += voxel.numHits();
+          path_length += voxel.pathLength();
         }
       }
     }
     const double z_min = base_height + pix_width * static_cast<double>(z);
     ofs << z_min << "," << z_min + pix_width << "," << count << "," << dims[0] * dims[1] << ","
-        << (count > 0 ? sum / static_cast<double>(count) : 0.0) << std::endl;
+        << (count > 0 ? hits / static_cast<double>(count) : 0.0) << ","
+        << (count > 0 ? sum / static_cast<double>(count) : 0.0) << "," << (path_length > 0.0 ? hits / path_length : 0.0)
+        << std::endl;
   }
   std::cout << "density profile written to " << file_name << std::endl;
   return true;
@@ -702,9 +808,30 @@ bool renderCloud(const std::string &cloud_file, const Cuboid &bounds, ViewDirect
       const bool cylinders = density_options.distribution == ElementDistribution::VerticalCylinder;
       DensityGrid grid(grid_bounds, pix_width, dims, density_options.distribution,
                        cylinders ? density_options.min_sin_zenith : 0.0);
+      grid.setPathEstimator(density_options.path_estimator);
+      if (cylinders && density_options.footprint.enabled())
+      {
+        if (density_options.stem_diameter <= 0.0)
+        {
+          std::cerr << "Error: the beam footprint correction requires the stem diameter" << std::endl;
+          return false;
+        }
+        grid.setFootprint(density_options.footprint, density_options.stem_diameter);
+        std::cout << "correcting for beam footprint, effective stem width of " << density_options.stem_diameter
+                  << " m stems is "
+                  << effectiveStemWidth(density_options.stem_diameter, density_options.footprint.diameter(1.0),
+                                        density_options.footprint.threshold)
+                  << " m at 1 m range, "
+                  << effectiveStemWidth(density_options.stem_diameter, density_options.footprint.diameter(5.0),
+                                        density_options.footprint.threshold)
+                  << " m at 5 m range" << std::endl;
+      }
 
 #if defined FLAT_TOP_COMPENSATION
-      grid.calculatePeaks(cloud_file);
+      if (density_options.flat_top_compensation)  // without the peaks, no compensation is applied
+      {
+        grid.calculatePeaks(cloud_file);
+      }
 #endif
       grid.calculateDensities(cloud_file);
       if (grid.numIgnoredRays() > 0)
@@ -713,7 +840,10 @@ bool renderCloud(const std::string &cloud_file, const Cuboid &bounds, ViewDirect
                   << density_options.min_sin_zenith << ")" << std::endl;
       }
 #if defined FLAT_TOP_COMPENSATION
-      grid.flatTopCompensation();
+      if (density_options.flat_top_compensation)
+      {
+        grid.flatTopCompensation();
+      }
 #endif
 #if DENSITY_MIN_RAYS > 0
       grid.addNeighbourPriors();
@@ -723,7 +853,8 @@ bool renderCloud(const std::string &cloud_file, const Cuboid &bounds, ViewDirect
         // addNeighbourPriors shifts the voxel contents by -shift in each axis, so these are the valid dimensions,
         // with index 0 at bounds.min_bound_
         const Eigen::Vector3i valid_dims = dims - 2 * Eigen::Vector3i(shift, shift, shift);
-        if (!writeDensityProfile(density_options.profile_file, grid, valid_dims, bounds.min_bound_[2], pix_width))
+        if (!writeDensityProfile(density_options.profile_file, grid, valid_dims, dims, shift, bounds.min_bound_[2],
+                                 pix_width))
         {
           return false;
         }

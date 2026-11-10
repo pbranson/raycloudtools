@@ -53,9 +53,71 @@ enum class RAYLIB_EXPORT ElementDistribution
   VerticalCylinder
 };
 
+/// Gaussian model of a lidar beam's footprint, used to estimate the detectable width of thin elements
+struct RAYLIB_EXPORT BeamFootprint
+{
+  /// beam diameter at the scanner (m), defined at the 1/e^2 intensity level
+  double exit_diameter = 0.0;
+  /// full-angle beam divergence (radians), defined at the 1/e^2 intensity level
+  double divergence = 0.0;
+  /// minimum fraction of the beam's power that an element must intercept to trigger a return. In practice this is
+  /// a calibration parameter: it depends on the scanner's detection threshold, the element reflectance and range.
+  double threshold = 0.05;
+  inline bool enabled() const { return exit_diameter > 0.0 || divergence > 0.0; }
+  /// the 1/e^2 beam diameter at the given range
+  inline double diameter(double range) const { return exit_diameter + divergence * range; }
+};
+
+/// Fraction of a Gaussian beam's power (1/e^2 diameter @c beam_diameter) that is intercepted by an infinitely long
+/// strip of width @c width whose centreline is offset by @c offset from the beam centre. A vertical cylinder of
+/// diameter d is seen as such a strip of width d from any ray direction.
+double RAYLIB_EXPORT stripInterceptFraction(double width, double beam_diameter, double offset);
+
+/// The effective (detectable) width of a long cylinder of diameter @c diameter: the width of the band of beam-centre
+/// offsets for which the intercepted power fraction reaches @c threshold. It is larger than @c diameter for small
+/// thresholds, and is zero when the cylinder is too thin to ever trigger a return.
+double RAYLIB_EXPORT effectiveStemWidth(double diameter, double beam_diameter, double threshold);
+
+/// Tabulated effective width of a stem of given diameter as a function of range, for fast lookup
+class RAYLIB_EXPORT StemWidthModel
+{
+public:
+  StemWidthModel() {}
+  StemWidthModel(double diameter, const BeamFootprint &footprint);
+  /// effective (detectable) width of the stem at the given range from the scanner
+  double width(double range) const;
+  /// effective width divided by true diameter
+  inline double scale(double range) const { return width(range) / diameter_; }
+  /// the maximum effective width over ranges 0 to @c max_range
+  double maxWidth(double max_range) const;
+  inline bool enabled() const { return enabled_; }
+
+private:
+  double diameter_ = 0.0;
+  BeamFootprint footprint_;
+  bool enabled_ = false;
+  std::vector<double> table_;  // effective width at regular range intervals
+  static constexpr double table_step_ = 0.01;
+  static constexpr double table_max_range_ = 100.0;
+};
+
+/// How the path length of a ray that hits within a voxel is counted
+enum class RAYLIB_EXPORT PathEstimator
+{
+  /// The path up to the hit point. This is the maximum likelihood estimate for a turbid medium (many small elements
+  /// randomly placed within each voxel, Beer-Lambert attenuation). It is biased high when voxels contain only a few
+  /// discrete elements, by about 1/(1 - p/2) where p is the chance of a ray crossing a voxel being intercepted.
+  BeerLambert,
+  /// The path to where the ray would have exited the voxel. density = hits / crossing length is exact for any
+  /// spatial arrangement of elements (including clumped), provided elements rarely occlude each other within a
+  /// single voxel. So it suits voxels that are small relative to the mean free path, e.g. pneumatophores.
+  Crossing
+};
+
 /// Options controlling the voxel density estimate
 struct RAYLIB_EXPORT DensityOptions
 {
+  PathEstimator path_estimator = PathEstimator::BeerLambert;
   ElementDistribution distribution = ElementDistribution::Spherical;
   /// For VerticalCylinder only: rays whose sin(zenith angle) is below this are ignored entirely, since near-vertical
   /// rays carry almost no information on vertical elements, and their few (end cap) hits would give outliers.
@@ -63,6 +125,15 @@ struct RAYLIB_EXPORT DensityOptions
   double min_sin_zenith = 0.1;
   /// Optional .csv file to write the mean density per horizontal layer of voxels
   std::string profile_file;
+  /// For VerticalCylinder only: when the footprint is enabled and stem_diameter > 0, each ray is weighted by the
+  /// ratio of the stem's effective (detectable) width at that range to its true diameter. This corrects the
+  /// apparent widening of thin stems by the beam footprint, so the density remains N d for the true diameter d.
+  BeamFootprint footprint;
+  double stem_diameter = 0.0;
+  /// Model the top of the cloud as a sharp boundary between air and a uniform medium (e.g. a grass or crop
+  /// canopy), so the air above the highest point in each column is excluded. Not suited to elements of varying
+  /// height such as pneumatophores, where it biases the upper layers.
+  bool flat_top_compensation = true;
 };
 
 /// The G function: the mean projected area of the elements in the (unit) ray direction @c dir, per unit reference
@@ -182,6 +253,16 @@ struct RAYLIB_EXPORT DensityGrid
   inline Cuboid bounds() { return bounds_; }
   inline double voxelWidth() const { return voxel_width_; }
   inline ElementDistribution distribution() const { return distribution_; }
+  inline void setPathEstimator(PathEstimator estimator) { path_estimator_ = estimator; }
+  /// Correct for the beam footprint widening thin vertical stems, using their (mean) true diameter.
+  /// Only applies to the VerticalCylinder distribution
+  inline void setFootprint(const BeamFootprint &footprint, double stem_diameter)
+  {
+    if (distribution_ == ElementDistribution::VerticalCylinder && footprint.enabled() && stem_diameter > 0.0)
+    {
+      stem_width_ = StemWidthModel(stem_diameter, footprint);
+    }
+  }
   /// Number of rays ignored because their G value was below min_g
   inline size_t numIgnoredRays() const { return num_ignored_rays_; }
   // used in walking grid only
@@ -198,7 +279,10 @@ private:
   double min_g_;  // rays with G below this are ignored
   size_t num_ignored_rays_ = 0;
   bool bounded_;
-  double ray_g_;  // G function value of the ray currently being walked
+  double ray_g_;               // G function value of the ray currently being walked
+  double range_offset_ = 0.0;  // distance from the ray's original start to its (clipped) start in the grid
+  StemWidthModel stem_width_;  // optional beam footprint correction
+  PathEstimator path_estimator_ = PathEstimator::BeerLambert;
 
   // used when waling the grid
   Eigen::Vector3d source_;
@@ -280,16 +364,23 @@ inline bool DensityGrid::operator()(const Eigen::Vector3i &p, const Eigen::Vecto
   }
 #endif
 
+  double g = ray_g_;
+  if (stem_width_.enabled())
+  {
+    // the effective width of the stems at the range of this segment of the ray
+    const double range = range_offset_ + 0.5 * (in_length + end_length) * voxel_width_;
+    g *= stem_width_.scale(range);
+  }
   if (p == target && bounded_)
   {
-    double length_in_voxel = end_length - in_length;
-    voxels_[index].addHitRay(static_cast<float>(ray_g_ * length_in_voxel * voxel_width_));
+    const double length_in_voxel = (path_estimator_ == PathEstimator::Crossing ? out_length : end_length) - in_length;
+    voxels_[index].addHitRay(static_cast<float>(g * length_in_voxel * voxel_width_));
   }
   else
   {
     // end_length, so that rays which end within the voxel without hitting (e.g. zero-alpha ground returns) only
     // count the path length up to their end point
-    voxels_[index].addMissRay(static_cast<float>(ray_g_ * (end_length - in_length) * voxel_width_));
+    voxels_[index].addMissRay(static_cast<float>(g * (end_length - in_length) * voxel_width_));
   }
   return false;
 }

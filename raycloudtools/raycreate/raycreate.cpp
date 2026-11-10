@@ -7,6 +7,7 @@
 #include "raylib/raycloud.h"
 #include "raylib/rayforestgen.h"
 #include "raylib/rayparse.h"
+#include "raylib/raypneumatophoregen.h"
 #include "raylib/rayroomgen.h"
 #include "raylib/rayterraingen.h"
 #include "raylib/raytreegen.h"
@@ -27,6 +28,15 @@ void usage(int exit_code = 1)
   std::cout << "          forest" << std::endl;
   std::cout << "          terrain" << std::endl;
   std::cout << "          field" << std::endl;
+  std::cout << "          pneumatophores - vertical stems on flat ground, scanned by a hand-held lidar. Also outputs" << std::endl;
+  std::cout << "                           pneumatophores_truth.csv, the true frontal area per volume N*d profile" << std::endl;
+  std::cout << "             --stems_per_m2 100     - mean stem density" << std::endl;
+  std::cout << "             --diameter 0.01        - stem diameter (m)" << std::endl;
+  std::cout << "             --clustered            - stems along cable roots radiating from trees, else random" << std::endl;
+  std::cout << "             --cluster_spread 0.03  - standard deviation of stem distance from the cable roots (m)" << std::endl;
+  std::cout << "             --footprint 0.01,0.003,0.05 - beam exit diameter (m), divergence (rad), detection threshold" << std::endl;
+  std::cout << "             --rays 2000000         - number of rays" << std::endl;
+  std::cout << "             --ground_returns       - keep ground returns as bounded rays (default: zero alpha)" << std::endl;
   std::cout << std::endl;
   std::cout << "          forest trees.txt - generate from a comma-separated list of x,y,z,radius trees" << std::endl;
   std::cout << "          terrain mesh.ply - generate from a ground mesh" << std::endl;
@@ -38,12 +48,25 @@ double random(double x, double y){ return ray::random(x, y); }
 
 int rayCreate(int argc, char *argv[])
 {
-  ray::KeyChoice cloud_type({ "room", "building", "tree", "forest", "terrain", "field" });
+  ray::KeyChoice cloud_type({ "room", "building", "tree", "forest", "terrain", "field", "pneumatophores" });
   ray::IntArgument seed(1, 1000000);
   ray::OptionalFlagArgument view_flag("view", 'v');
   ray::FileArgument input_file;
-  bool from_seed = ray::parseCommandLine(argc, argv, { &cloud_type, &seed }, { &view_flag });
-  bool from_file = ray::parseCommandLine(argc, argv, { &cloud_type, &input_file }, { &view_flag });
+  // pneumatophore options
+  ray::DoubleArgument stems_per_m2(0.01, 100000.0, 100.0), diameter(0.0001, 1.0, 0.01), spread(0.0, 100.0, 0.03);
+  ray::IntArgument num_rays(1, 1000000000, 2000000);
+  ray::Vector3dArgument footprint(0.0, 1.0);
+  ray::OptionalKeyValueArgument stems_option("stems_per_m2", 's', &stems_per_m2);
+  ray::OptionalKeyValueArgument diameter_option("diameter", 'd', &diameter);
+  ray::OptionalKeyValueArgument rays_option("rays", 'r', &num_rays);
+  ray::OptionalKeyValueArgument footprint_option("footprint", 'b', &footprint);
+  ray::OptionalKeyValueArgument spread_option("cluster_spread", 'p', &spread);
+  ray::OptionalFlagArgument clustered_flag("clustered", 'c'), ground_flag("ground_returns", 'g');
+  const std::vector<ray::OptionalArgument *> options = { &view_flag,     &stems_option,     &diameter_option,
+                                                         &rays_option,   &footprint_option, &clustered_flag,
+                                                         &ground_flag,   &spread_option };
+  bool from_seed = ray::parseCommandLine(argc, argv, { &cloud_type, &seed }, options);
+  bool from_file = ray::parseCommandLine(argc, argv, { &cloud_type, &input_file }, options);
   if (!from_seed && !from_file)
     usage();
 
@@ -238,6 +261,29 @@ int rayCreate(int argc, char *argv[])
       time += time_delta;
     }
     colourByTime(cloud.times, cloud.colours);
+  }
+  else if (type == "pneumatophores" && from_seed)
+  {
+    ray::PneumatophoreParams params;
+    params.stems_per_m2 = stems_per_m2.value();
+    params.diameter = diameter.value();
+    params.num_rays = num_rays.value();
+    params.clustered = clustered_flag.isSet();
+    params.lateral_spread = spread.value();
+    params.ground_unbounded = !ground_flag.isSet();
+    if (footprint_option.isSet())
+    {
+      params.footprint.exit_diameter = footprint.value()[0];
+      params.footprint.divergence = footprint.value()[1];
+      params.footprint.threshold = footprint.value()[2];
+    }
+    ray::PneumatophoreGen gen;
+    gen.generate(params, static_cast<unsigned int>(seed.value()));
+    cloud = gen.cloud();
+    if (!gen.writeTruthProfile(type + "_truth.csv", 0.01))
+    {
+      return 1;
+    }
   }
   else
     usage();

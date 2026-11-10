@@ -201,7 +201,21 @@ This gives an example of how the command line tools could be sequenced to analys
 <img img width="320" src="https://raw.githubusercontent.com/csiro-robotics/raycloudtools/main/pics/rayrender_room_top_density_rgb.png?at=refs%2Fheads%2Fmaster"/>
 </p>
 
-By default density assumes a spherical (isotropic) distribution of leaf angles (G = 0.5), giving leaf area per volume. For vertical stem-like elements such as mangrove pneumatophores, use `--density_model vertical_cylinder`. This applies G = sin(zenith) to each ray, so density is the frontal area per volume N·d (stems per m² × diameter, in m⁻¹), and pixel values are the frontal area index N·d·h. `--profile profile.csv` writes the mean density per height layer. Ground returns should be removed first (e.g. `rayextract terrain`, then set ground rays to zero alpha), so that they are treated as unobstructed rays rather than hits.
+By default density assumes a spherical (isotropic) distribution of leaf angles (G = 0.5), giving leaf area per volume. For vertical stem-like elements such as mangrove pneumatophores, use `--density_model vertical_cylinder`. This applies G = sin(zenith) to each ray, so density is the frontal area per volume N·d (stems per m² × diameter, in m⁻¹), and pixel values are the frontal area index N·d·h. `--profile profile.csv` writes the density per height layer. Ground returns should be removed first (e.g. `rayextract terrain`, then set ground rays to zero alpha), so that they are treated as unobstructed rays rather than hits.
+
+For thin stems scanned by hand-held lidar, a typical command is:
+
+```console
+rayrender cloud.ply top density --density_model vertical_cylinder --estimator crossing --no_flat_top --min_sin_zenith 0.9 --stem_diameter 0.01 --footprint 0.01,0.003,0.05 --pixel_width 0.05 --min_bound -3,-3,0 --max_bound 3,3,0.6 --profile profile.csv
+```
+
+* `--footprint exit_diameter,divergence,threshold` corrects for the beam footprint, which makes thin stems appear wider (by about 2.5x for 1 cm stems in simulation). It needs the true mean stem diameter. The threshold (the fraction of beam power a stem must intercept to give a return) is uncertain, and the result is sensitive to it (0.02 or 0.15 instead of 0.05 gives -13% or +30%), so calibrate it on a plot of known density.
+* `--estimator crossing` suits voxels holding few stems. The default (`beer_lambert`) assumes many small elements per voxel, and is biased high (about +10% at 5 cm voxels) for discrete stems. With `crossing`, use a voxel width of about twice the effective stem width (5 cm in the example). Stems hiding each other within a voxel give a residual underestimate, of about 2-6% for randomly placed stems and up to about 15% when they are tightly clustered along cable roots.
+* `--no_flat_top` disables the flat canopy top model (designed for grass and crops), which biases stems of varying height.
+* `--min_sin_zenith 0.9` uses only rays within about 26 degrees of horizontal. Steeper rays hit the stem tops, which the model doesn't include, inflating the upper layers.
+* In the profile, use the mean of the voxel densities rather than the pooled column when stems may be clustered: pooling across a layer underestimates clustered stems by 15-30%.
+
+`raycreate pneumatophores 1` generates a synthetic hand-held scan of a pneumatophore field, plus the true profile (`pneumatophores_truth.csv`), for testing these settings. Options include `--clustered`, `--cluster_spread`, `--stems_per_m2`, `--diameter` and `--footprint`.
 
 **raytransients min room.ply 2 rays** &nbsp;&nbsp;&nbsp; Segment out moving or moved objects during the scan, when matter has been re-observed as missing by 2 or more rays.
 

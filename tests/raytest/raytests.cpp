@@ -22,10 +22,13 @@
 #include "raylib/raylaz.h"
 #include "raylib/raymesh.h"
 #include "raylib/rayply.h"
+#include "raylib/raypneumatophoregen.h"
 #include "raylib/rayrenderer.h"
 #include "raylib/raythreads.h"
 
+#include <fstream>
 #include <random>
+#include <sstream>
 
 #include "environment.h"
 
@@ -519,6 +522,108 @@ TEST(Basic, RayDensityVerticalCylinders)
     // spherical model returns 2 * G * a with G = sin(zenith)
     EXPECT_NEAR(spherical_estimate, 2.0 * sin_zenith * frontal_area_density, 0.1 * frontal_area_density);
   }
+}
+
+/// Checks the Gaussian beam footprint model against a Monte-Carlo integration of the beam power over a strip
+TEST(Basic, RayDensityFootprintWidth)
+{
+  std::mt19937 gen(5);
+  std::normal_distribution<double> normal(0.0, 1.0);
+  const double diameter = 0.01, beam_diameter = 0.025;
+  const double sigma = beam_diameter / 4.0;  // 1/e^2 diameter is 4 standard deviations
+  for (const double offset : { 0.0, 0.005, 0.012 })
+  {
+    int inside = 0;
+    const int num = 200000;
+    for (int i = 0; i < num; i++)
+    {
+      const double x = sigma * normal(gen);  // the strip is vertical, so only the horizontal coordinate matters
+      inside += std::abs(x - offset) < 0.5 * diameter ? 1 : 0;
+    }
+    EXPECT_NEAR(ray::stripInterceptFraction(diameter, beam_diameter, offset), static_cast<double>(inside) / num, 0.005);
+  }
+  // the effective width is where the intercepted fraction equals the threshold
+  const double threshold = 0.05;
+  const double width = ray::effectiveStemWidth(diameter, beam_diameter, threshold);
+  EXPECT_GT(width, diameter);
+  EXPECT_NEAR(ray::stripInterceptFraction(diameter, beam_diameter, 0.5 * width), threshold, 1e-6);
+  // a negligible beam gives the true diameter, and too thin a stem is never detected
+  EXPECT_NEAR(ray::effectiveStemWidth(diameter, 1e-6, 0.5), diameter, 1e-6);
+  EXPECT_EQ(ray::effectiveStemWidth(diameter, 0.1, 0.5), 0.0);
+  // the tabulated model matches the direct calculation
+  ray::BeamFootprint footprint;
+  footprint.exit_diameter = 0.01;
+  footprint.divergence = 0.003;
+  footprint.threshold = threshold;
+  ray::StemWidthModel model(diameter, footprint);
+  EXPECT_NEAR(model.width(5.003), ray::effectiveStemWidth(diameter, footprint.diameter(5.003), threshold), 1e-5);
+}
+
+/// End-to-end check on a synthetic hand-held scan of a random pneumatophore field with a finite beam footprint:
+/// the near-ground frontal area per volume profile should match the truth when corrected for the footprint, and be
+/// substantially overestimated when not
+TEST(Basic, RayDensityPneumatophores)
+{
+  ray::PneumatophoreParams params;
+  params.num_rays = 2000000;
+  params.footprint.exit_diameter = 0.01;
+  params.footprint.divergence = 0.003;
+  params.footprint.threshold = 0.05;
+  ray::PneumatophoreGen gen;
+  gen.generate(params, 7);
+  gen.cloud().save("pneumatophores_test.ply");
+  // true N d in the lowest 0.1 m, from the stems within the plot
+  const double half_plot = 0.5 * params.plot_width;
+  double frontal_area = 0.0;
+  for (const auto &stem : gen.stems())
+  {
+    if (std::abs(stem[0]) < half_plot && std::abs(stem[1]) < half_plot)
+    {
+      frontal_area += params.diameter * std::min(stem[2], 0.1);
+    }
+  }
+  const double truth = frontal_area / (params.plot_width * params.plot_width * 0.1);
+
+  const ray::Cuboid bounds(Eigen::Vector3d(-half_plot, -half_plot, 0.0), Eigen::Vector3d(half_plot, half_plot, 0.6));
+  auto lowest_layer = [&](bool correct_footprint) {
+    ray::DensityOptions options;
+    options.distribution = ray::ElementDistribution::VerticalCylinder;
+    options.path_estimator = ray::PathEstimator::Crossing;
+    options.flat_top_compensation = false;
+    options.min_sin_zenith = 0.9;
+    options.profile_file = "pneumatophores_test_profile.csv";
+    if (correct_footprint)
+    {
+      options.footprint = params.footprint;
+      options.stem_diameter = params.diameter;
+    }
+    EXPECT_TRUE(ray::renderCloud("pneumatophores_test.ply", bounds, ray::ViewDirection::Top, ray::RenderStyle::Density,
+                                 0.05, "pneumatophores_test.png", "", false, nullptr, options));
+    std::ifstream ifs(options.profile_file);
+    std::string line;
+    std::getline(ifs, line);  // header
+    double layer_sum = 0.0;
+    for (int i = 0; i < 2; i++)  // the two 0.05 m layers making up the lowest 0.1 m
+    {
+      std::getline(ifs, line);
+      std::stringstream ss(line);
+      std::string field;
+      for (int j = 0; j < 6; j++)
+      {
+        std::getline(ss, field, ',');
+      }
+      layer_sum += std::stod(field);  // mean of the voxel densities
+    }
+    return 0.5 * layer_sum;
+  };
+  const double corrected = lowest_layer(true);
+  const double uncorrected = lowest_layer(false);
+  std::cout << "true N*d near ground: " << truth << ", footprint corrected estimate: " << corrected
+            << ", uncorrected: " << uncorrected << std::endl;
+  // the crossing estimator is biased low by stems occluding each other within a voxel, by about half the chance
+  // that a ray crossing a voxel is intercepted (here N d_eff * 0.05 m ~ 0.12, so about -6%)
+  EXPECT_NEAR(corrected, truth, 0.07 * truth);
+  EXPECT_GT(uncorrected, 1.5 * truth);
 }
 
 #if RAYLIB_WITH_QHULL
