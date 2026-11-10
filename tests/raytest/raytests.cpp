@@ -590,7 +590,7 @@ TEST(Basic, RayDensityPneumatophores)
     options.distribution = ray::ElementDistribution::VerticalCylinder;
     options.path_estimator = ray::PathEstimator::Crossing;
     options.flat_top_compensation = false;
-    options.min_sin_zenith = 0.9;
+    options.min_sin_zenith = 0.5;
     options.profile_file = "pneumatophores_test_profile.csv";
     if (correct_footprint)
     {
@@ -620,9 +620,9 @@ TEST(Basic, RayDensityPneumatophores)
   const double uncorrected = lowest_layer(false);
   std::cout << "true N*d near ground: " << truth << ", footprint corrected estimate: " << corrected
             << ", uncorrected: " << uncorrected << std::endl;
-  // the crossing estimator is biased low by stems occluding each other within a voxel, by about half the chance
-  // that a ray crossing a voxel is intercepted (here N d_eff * 0.05 m ~ 0.12, so about -6%)
-  EXPECT_NEAR(corrected, truth, 0.07 * truth);
+  // residual biases: stems occluding each other within a voxel (lower), and the footprint-widened stems
+  // overlapping (lower by about exp(-N pi d_eff^2 / 4), ~ -5% here), are each a few percent at this density
+  EXPECT_NEAR(corrected, truth, 0.05 * truth);
   EXPECT_GT(uncorrected, 1.5 * truth);
 }
 

@@ -123,8 +123,14 @@ struct RAYLIB_EXPORT DensityOptions
   /// rays carry almost no information on vertical elements, and their few (end cap) hits would give outliers.
   /// Ignoring rays based on their direction alone does not bias the estimate.
   double min_sin_zenith = 0.1;
+  /// For VerticalCylinder only: rays whose sin(zenith angle) is above this are ignored, to analyse a band of angles
+  double max_sin_zenith = 1.0;
   /// Optional .csv file to write the mean density per horizontal layer of voxels
   std::string profile_file;
+  /// Optional .csv file to write the density aggregated into cells of size @c cell_size (e.g. for hydrodynamic
+  /// models), tiling from the minimum bound
+  std::string cells_file;
+  Eigen::Vector3d cell_size = Eigen::Vector3d(1.0, 1.0, 0.1);
   /// For VerticalCylinder only: when the footprint is enabled and stem_diameter > 0, each ray is weighted by the
   /// ratio of the stem's effective (detectable) width at that range to its true diameter. This corrects the
   /// apparent widening of thin stems by the beam footprint, so the density remains N d for the true diameter d.
@@ -254,6 +260,8 @@ struct RAYLIB_EXPORT DensityGrid
   inline double voxelWidth() const { return voxel_width_; }
   inline ElementDistribution distribution() const { return distribution_; }
   inline void setPathEstimator(PathEstimator estimator) { path_estimator_ = estimator; }
+  /// Rays with G above this value are ignored
+  inline void setMaxG(double max_g) { max_g_ = max_g; }
   /// Correct for the beam footprint widening thin vertical stems, using their (mean) true diameter.
   /// Only applies to the VerticalCylinder distribution
   inline void setFootprint(const BeamFootprint &footprint, double stem_diameter)
@@ -261,6 +269,18 @@ struct RAYLIB_EXPORT DensityGrid
     if (distribution_ == ElementDistribution::VerticalCylinder && footprint.enabled() && stem_diameter > 0.0)
     {
       stem_width_ = StemWidthModel(stem_diameter, footprint);
+    }
+    setStemDiameter(stem_diameter);
+  }
+  /// The (mean) true stem diameter. For VerticalCylinder with the Crossing estimator, this extends each hit ray by
+  /// the stem's mean internal chord (pi/4 of its effective width, horizontally), counted as unobstructed path. This
+  /// removes a positive bias for voxels not much larger than the stems: without it, a stem straddling a voxel
+  /// boundary blocks rays that would only have passed through its own interior in the neighbouring voxel.
+  inline void setStemDiameter(double stem_diameter)
+  {
+    if (distribution_ == ElementDistribution::VerticalCylinder)
+    {
+      stem_diameter_ = stem_diameter;
     }
   }
   /// Number of rays ignored because their G value was below min_g
@@ -276,12 +296,16 @@ private:
   double voxel_width_;
   Eigen::Vector3i voxel_dims_;
   ElementDistribution distribution_;
-  double min_g_;  // rays with G below this are ignored
+  double min_g_;                                       // rays with G below this are ignored
+  double max_g_ = std::numeric_limits<double>::max();  // rays with G above this are ignored
   size_t num_ignored_rays_ = 0;
   bool bounded_;
-  double ray_g_;               // G function value of the ray currently being walked
-  double range_offset_ = 0.0;  // distance from the ray's original start to its (clipped) start in the grid
-  StemWidthModel stem_width_;  // optional beam footprint correction
+  double ray_g_;                // G function value of the ray currently being walked
+  double range_offset_ = 0.0;   // distance from the ray's original start to its (clipped) start in the grid
+  StemWidthModel stem_width_;   // optional beam footprint correction
+  double stem_diameter_ = 0.0;  // optional mean stem diameter
+  Eigen::Vector3i hit_voxel_;   // voxel of the end point of the ray currently being walked
+  double hit_length_ = 0.0;     // length (in voxels) to the end point of the ray currently being walked
   PathEstimator path_estimator_ = PathEstimator::BeerLambert;
 
   // used when waling the grid
@@ -343,7 +367,7 @@ int DensityGrid::getIndexFromPos(const Eigen::Vector3d &pos) const
   Eigen::Vector3d gridspace = (pos - bounds_.min_bound_) / voxel_width_;
   return getIndex(gridspace.cast<int>());
 }
-inline bool DensityGrid::operator()(const Eigen::Vector3i &p, const Eigen::Vector3i &target, double in_length,
+inline bool DensityGrid::operator()(const Eigen::Vector3i &p, const Eigen::Vector3i &, double in_length,
                                     double out_length, double max_length)
 {
   int index = getIndex(p);
@@ -371,9 +395,11 @@ inline bool DensityGrid::operator()(const Eigen::Vector3i &p, const Eigen::Vecto
     const double range = range_offset_ + 0.5 * (in_length + end_length) * voxel_width_;
     g *= stem_width_.scale(range);
   }
-  if (p == target && bounded_)
+  // the hit voxel is that of the ray's end point. It is stored, as the walked ray may be extended beyond its hit
+  if (p == hit_voxel_ && bounded_)
   {
-    const double length_in_voxel = (path_estimator_ == PathEstimator::Crossing ? out_length : end_length) - in_length;
+    const double length_in_voxel =
+      (path_estimator_ == PathEstimator::Crossing ? out_length : std::min(out_length, hit_length_)) - in_length;
     voxels_[index].addHitRay(static_cast<float>(g * length_in_voxel * voxel_width_));
   }
   else

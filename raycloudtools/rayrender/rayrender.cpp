@@ -46,6 +46,9 @@ void usage(int exit_code = 1)
   std::cout << "                                             volume N*d (1/m). Default: spherical (leaf area per volume)" << std::endl;
   std::cout << "                     --min_sin_zenith 0.1  - vertical_cylinder only: ignore rays steeper than this" << std::endl;
   std::cout << "                     --profile name.csv    - for density styles: output mean density per height layer" << std::endl;
+  std::cout << "                     --cells name.csv      - for density styles: output density aggregated into cells" << std::endl;
+  std::cout << "                     --cell_size 1,1,0.1   - size of the aggregated cells (m), tiling from the min bound" << std::endl;
+  std::cout << "                     --max_sin_zenith 1    - vertical_cylinder only: ignore rays shallower than this" << std::endl;
   std::cout << "                     --stem_diameter 0.01  - vertical_cylinder only: mean true stem diameter (m)," << std::endl;
   std::cout << "                     --footprint 0.01,0.003,0.05 - with beam exit diameter (m), full divergence (rad)" << std::endl;
   std::cout << "                                             and detection threshold (fraction of beam power), to" << std::endl;
@@ -71,6 +74,9 @@ int rayRender(int argc, char *argv[])
   ray::KeyChoice estimator({ "beer_lambert", "crossing" });
   ray::DoubleArgument stem_diameter(0.0001, 10.0);
   ray::Vector3dArgument footprint(0.0, 1.0), min_bound(-1e10, 1e10), max_bound(-1e10, 1e10);
+  ray::Vector3dArgument cell_size(0.0001, 1e6, Eigen::Vector3d(1.0, 1.0, 0.1));
+  ray::DoubleArgument max_sin_zenith(0.0, 1.0);
+  ray::FileArgument cells_file(false);
   ray::IntArgument resolution(1, 20000, 512);
   ray::FileArgument cloud_file, image_file, transform_file, projection_file(false), profile_file(false);
   ray::OptionalFlagArgument mark_origin("mark_origin", 'm'), view_flag("view", 'v'), no_flat_top("no_flat_top", 'u');
@@ -84,21 +90,34 @@ int rayRender(int argc, char *argv[])
   ray::OptionalKeyValueArgument min_sin_zenith_option("min_sin_zenith", 'z', &min_sin_zenith);
   ray::OptionalKeyValueArgument profile_file_option("profile", 'f', &profile_file);
   ray::OptionalKeyValueArgument estimator_option("estimator", 'e', &estimator);
+  ray::OptionalKeyValueArgument cells_option("cells", 'c', &cells_file);
+  ray::OptionalKeyValueArgument cell_size_option("cell_size", 'l', &cell_size);
+  ray::OptionalKeyValueArgument max_sin_zenith_option("max_sin_zenith", 'y', &max_sin_zenith);
   ray::OptionalKeyValueArgument stem_diameter_option("stem_diameter", 's', &stem_diameter);
   ray::OptionalKeyValueArgument footprint_option("footprint", 'b', &footprint);
   ray::OptionalKeyValueArgument min_bound_option("min_bound", 'n', &min_bound);
   ray::OptionalKeyValueArgument max_bound_option("max_bound", 'x', &max_bound);
   if (!ray::parseCommandLine(
         argc, argv, { &cloud_file, &viewpoint, &style },
-        { &resolution_option, &pixel_width_option, &output_file_option, &view_flag, &mark_origin,
-          &transform_file_option, &grid_width_option, &projection_file_option, &density_model_option,
-          &min_sin_zenith_option, &profile_file_option, &stem_diameter_option, &footprint_option, &min_bound_option,
-          &max_bound_option, &no_flat_top, &estimator_option }))
+        { &resolution_option,    &pixel_width_option,    &output_file_option,  &view_flag,
+          &mark_origin,          &transform_file_option, &grid_width_option,   &projection_file_option,
+          &density_model_option, &min_sin_zenith_option, &profile_file_option, &stem_diameter_option,
+          &footprint_option,     &min_bound_option,      &max_bound_option,    &no_flat_top,
+          &estimator_option,     &cells_option,          &cell_size_option,    &max_sin_zenith_option }))
   {
     usage();
   }
   ray::DensityOptions density_options;
   density_options.flat_top_compensation = !no_flat_top.isSet();
+  if (cells_option.isSet())
+  {
+    density_options.cells_file = cells_file.name();
+    density_options.cell_size = cell_size.value();
+  }
+  if (max_sin_zenith_option.isSet())
+  {
+    density_options.max_sin_zenith = max_sin_zenith.value();
+  }
   if (estimator_option.isSet())
   {
     density_options.path_estimator = static_cast<ray::PathEstimator>(estimator.selectedID());

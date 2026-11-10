@@ -31,6 +31,12 @@ struct RAYLIB_EXPORT PneumatophoreParams
   int roots_per_tree = 12;       // cable roots per tree
   double root_length = 6.0;      // length of each cable root (m)
   double lateral_spread = 0.03;  // standard deviation of stem offsets from the cable root line (m)
+  // Patchy places stems at stems_per_m2 within circular patches, and at matrix_ratio * stems_per_m2 elsewhere, as in
+  // degraded areas. Patch centres are random, so the patches overlap
+  bool patchy = false;
+  double patch_radius = 0.5;  // radius of each patch (m)
+  double patch_cover = 0.3;   // fraction of the ground covered by patches
+  double matrix_ratio = 0.0;  // stem density between patches, relative to within them
 
   // scene and scan
   double plot_width = 6.0;       // the scanner walks within this square plot, centred on 0,0
@@ -41,6 +47,10 @@ struct RAYLIB_EXPORT PneumatophoreParams
   double max_range = 30.0;       // range of rays with no return (m)
   bool ground_unbounded = true;  // ground returns are given zero alpha (as if perfectly classified and removed)
   BeamFootprint footprint;       // beam model. Disabled by default (an infinitely thin beam)
+  // range of ray zenith angles (degrees from straight down). Rays are uniformly distributed over this band of
+  // directions. The default omits upward rays, which see only the sky or canopy here
+  double min_zenith_deg = 0.0;
+  double max_zenith_deg = 101.5;
 };
 
 /// Generates a synthetic pneumatophore field and its ray cloud. Stems are coloured green, ground returns brown
@@ -56,6 +66,10 @@ public:
 
   /// The true frontal area per unit volume N d, averaged over each height layer within the plot, as a .csv file
   bool writeTruthProfile(const std::string &file_name, double layer_width) const;
+
+  /// The true N d averaged over each cell of size @c cell_size, tiling the plot from (-w/2, -w/2, 0) for plot width w.
+  /// Written as a .csv file
+  bool writeTruthCells(const std::string &file_name, const Eigen::Vector3d &cell_size) const;
 
   /// Cast a single ray, returning its length and whether it hit a stem, or the ground
   void castRay(const Eigen::Vector3d &start, const Eigen::Vector3d &dir, double &length, bool &hit_stem,

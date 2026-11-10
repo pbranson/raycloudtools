@@ -25,6 +25,58 @@ void PneumatophoreGen::generateStems(std::mt19937 &gen)
   };
 
   stems_.clear();
+  if (p.patchy)
+  {
+    // a Boolean model of discs, with centre density giving the required ground cover
+    const double half_patch_field = half_field + p.patch_radius;
+    const double cover = std::min(p.patch_cover, 0.999);
+    const double centre_density = -std::log(1.0 - cover) / (kPi * p.patch_radius * p.patch_radius);
+    std::poisson_distribution<int> patch_count(centre_density * 4.0 * half_patch_field * half_patch_field);
+    const int num_patches = patch_count(gen);
+    // bucket the patch centres for a fast inside test
+    const double cell = std::max(p.patch_radius, 0.05);
+    const int cells = static_cast<int>(std::ceil(2.0 * half_patch_field / cell));
+    std::vector<std::vector<Eigen::Vector2d>> patch_buckets(static_cast<size_t>(cells * cells));
+    for (int i = 0; i < num_patches; i++)
+    {
+      const Eigen::Vector2d c(-half_patch_field + 2.0 * half_patch_field * uniform(gen),
+                              -half_patch_field + 2.0 * half_patch_field * uniform(gen));
+      const int bx = std::min(cells - 1, static_cast<int>((c[0] + half_patch_field) / cell));
+      const int by = std::min(cells - 1, static_cast<int>((c[1] + half_patch_field) / cell));
+      patch_buckets[static_cast<size_t>(bx + cells * by)].push_back(c);
+    }
+    auto in_patch = [&](const Eigen::Vector2d &pos) {
+      const int bx = static_cast<int>((pos[0] + half_patch_field) / cell);
+      const int by = static_cast<int>((pos[1] + half_patch_field) / cell);
+      for (int x = std::max(0, bx - 1); x <= std::min(cells - 1, bx + 1); x++)
+      {
+        for (int y = std::max(0, by - 1); y <= std::min(cells - 1, by + 1); y++)
+        {
+          for (const auto &c : patch_buckets[static_cast<size_t>(x + cells * y)])
+          {
+            if ((pos - c).squaredNorm() < p.patch_radius * p.patch_radius)
+            {
+              return true;
+            }
+          }
+        }
+      }
+      return false;
+    };
+    const double area = 4.0 * half_field * half_field;
+    std::poisson_distribution<int> count(p.stems_per_m2 * area);
+    const int num = count(gen);
+    for (int i = 0; i < num; i++)
+    {
+      const Eigen::Vector2d pos(-half_field + 2.0 * half_field * uniform(gen),
+                                -half_field + 2.0 * half_field * uniform(gen));
+      if (in_patch(pos) || uniform(gen) < p.matrix_ratio)
+      {
+        stems_.emplace_back(pos[0], pos[1], random_height());
+      }
+    }
+    return;
+  }
   if (!p.clustered)
   {
     // Poisson process: complete spatial randomness
@@ -124,9 +176,10 @@ void PneumatophoreGen::generate(const PneumatophoreParams &params, unsigned int 
     const Eigen::Vector3d start(-half_plot + along, y,
                                 params_.scanner_height + 0.05 * std::sin(10.0 * s));  // some walking bob
 
-    // a rotating hand-held scanner covers most directions. Upward rays (which see only the sky or canopy here) are
-    // mostly omitted for efficiency: z components range from -1 to 0.2
-    const double dz = -1.0 + 1.2 * uniform(gen);
+    // a rotating hand-held scanner covers most directions. Directions are uniform over the band of zenith angles
+    const double cos_min = std::cos(params_.min_zenith_deg * kPi / 180.0);
+    const double cos_max = std::cos(params_.max_zenith_deg * kPi / 180.0);
+    const double dz = -(cos_max + (cos_min - cos_max) * uniform(gen));
     const double phi = 2.0 * kPi * uniform(gen);
     const double horizontal = std::sqrt(std::max(0.0, 1.0 - dz * dz));
     const Eigen::Vector3d dir(horizontal * std::cos(phi), horizontal * std::sin(phi), dz);
@@ -286,6 +339,52 @@ bool PneumatophoreGen::writeTruthProfile(const std::string &file_name, double la
   }
   std::cout << "truth profile from " << num_stems << " stems in the " << params_.plot_width << " m plot ("
             << num_stems / area << " stems per m^2) written to " << file_name << std::endl;
+  return true;
+}
+bool PneumatophoreGen::writeTruthCells(const std::string &file_name, const Eigen::Vector3d &cell_size) const
+{
+  std::ofstream ofs(file_name.c_str(), std::ios::out);
+  if (!ofs.is_open())
+  {
+    std::cerr << "Error: cannot open " << file_name << " for writing" << std::endl;
+    return false;
+  }
+  const double half_plot = 0.5 * params_.plot_width;
+  const int nx = static_cast<int>(std::floor(params_.plot_width / cell_size[0] + 1e-9));
+  const int ny = static_cast<int>(std::floor(params_.plot_width / cell_size[1] + 1e-9));
+  const int nz = static_cast<int>(std::ceil(max_height_ / cell_size[2]));
+  std::vector<double> frontal_area(static_cast<size_t>(nx * ny * nz), 0.0);
+  for (const auto &stem : stems_)
+  {
+    const int x = static_cast<int>(std::floor((stem[0] + half_plot) / cell_size[0]));
+    const int y = static_cast<int>(std::floor((stem[1] + half_plot) / cell_size[1]));
+    if (x < 0 || y < 0 || x >= nx || y >= ny)
+    {
+      continue;
+    }
+    for (int z = 0; z < nz; z++)
+    {
+      const double overlap =
+        std::max(0.0, std::min(stem[2], cell_size[2] * (z + 1)) - cell_size[2] * static_cast<double>(z));
+      frontal_area[static_cast<size_t>(x + nx * (y + ny * z))] += params_.diameter * overlap;
+    }
+  }
+  const double volume = cell_size[0] * cell_size[1] * cell_size[2];
+  ofs << "x_min,y_min,z_min,x_max,y_max,z_max,true_frontal_area_per_volume_Nd" << std::endl;
+  for (int z = 0; z < nz; z++)
+  {
+    for (int y = 0; y < ny; y++)
+    {
+      for (int x = 0; x < nx; x++)
+      {
+        const Eigen::Vector3d min_bound(-half_plot + cell_size[0] * x, -half_plot + cell_size[1] * y, cell_size[2] * z);
+        const Eigen::Vector3d max_bound = min_bound + cell_size;
+        ofs << min_bound[0] << "," << min_bound[1] << "," << min_bound[2] << "," << max_bound[0] << "," << max_bound[1]
+            << "," << max_bound[2] << "," << frontal_area[static_cast<size_t>(x + nx * (y + ny * z))] / volume
+            << std::endl;
+      }
+    }
+  }
   return true;
 }
 }  // namespace ray

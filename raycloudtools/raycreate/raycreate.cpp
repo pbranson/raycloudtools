@@ -34,6 +34,11 @@ void usage(int exit_code = 1)
   std::cout << "             --diameter 0.01        - stem diameter (m)" << std::endl;
   std::cout << "             --clustered            - stems along cable roots radiating from trees, else random" << std::endl;
   std::cout << "             --cluster_spread 0.03  - standard deviation of stem distance from the cable roots (m)" << std::endl;
+  std::cout << "             --patchy 0.5,0.3,0     - stems only in random circular patches (e.g. degraded areas), given" << std::endl;
+  std::cout << "                                      patch radius (m), ground cover fraction and relative density between" << std::endl;
+  std::cout << "             --walk_spacing 1       - spacing of the lawnmower walking lines (m)" << std::endl;
+  std::cout << "             --zenith 0,101.5       - range of ray zenith angles (degrees from straight down)" << std::endl;
+  std::cout << "             --truth_cells 1,1,0.1  - also output pneumatophores_truth_cells.csv for cells of this size" << std::endl;
   std::cout << "             --footprint 0.01,0.003,0.05 - beam exit diameter (m), divergence (rad), detection threshold" << std::endl;
   std::cout << "             --rays 2000000         - number of rays" << std::endl;
   std::cout << "             --ground_returns       - keep ground returns as bounded rays (default: zero alpha)" << std::endl;
@@ -55,16 +60,23 @@ int rayCreate(int argc, char *argv[])
   // pneumatophore options
   ray::DoubleArgument stems_per_m2(0.01, 100000.0, 100.0), diameter(0.0001, 1.0, 0.01), spread(0.0, 100.0, 0.03);
   ray::IntArgument num_rays(1, 1000000000, 2000000);
-  ray::Vector3dArgument footprint(0.0, 1.0);
+  ray::Vector3dArgument footprint(0.0, 1.0), patchy(0.0, 1000.0), truth_cells(0.0001, 1000.0);
+  ray::DoubleArgument walk_spacing(0.01, 1000.0, 1.0);
+  ray::Vector2dArgument zenith(0.0, 180.0);
   ray::OptionalKeyValueArgument stems_option("stems_per_m2", 's', &stems_per_m2);
   ray::OptionalKeyValueArgument diameter_option("diameter", 'd', &diameter);
   ray::OptionalKeyValueArgument rays_option("rays", 'r', &num_rays);
   ray::OptionalKeyValueArgument footprint_option("footprint", 'b', &footprint);
   ray::OptionalKeyValueArgument spread_option("cluster_spread", 'p', &spread);
+  ray::OptionalKeyValueArgument patchy_option("patchy", 'a', &patchy);
+  ray::OptionalKeyValueArgument walk_option("walk_spacing", 'w', &walk_spacing);
+  ray::OptionalKeyValueArgument zenith_option("zenith", 'z', &zenith);
+  ray::OptionalKeyValueArgument truth_cells_option("truth_cells", 't', &truth_cells);
   ray::OptionalFlagArgument clustered_flag("clustered", 'c'), ground_flag("ground_returns", 'g');
   const std::vector<ray::OptionalArgument *> options = { &view_flag,     &stems_option,     &diameter_option,
                                                          &rays_option,   &footprint_option, &clustered_flag,
-                                                         &ground_flag,   &spread_option };
+                                                         &ground_flag,   &spread_option,    &patchy_option,
+                                                         &walk_option,   &zenith_option,    &truth_cells_option };
   bool from_seed = ray::parseCommandLine(argc, argv, { &cloud_type, &seed }, options);
   bool from_file = ray::parseCommandLine(argc, argv, { &cloud_type, &input_file }, options);
   if (!from_seed && !from_file)
@@ -270,6 +282,19 @@ int rayCreate(int argc, char *argv[])
     params.num_rays = num_rays.value();
     params.clustered = clustered_flag.isSet();
     params.lateral_spread = spread.value();
+    params.walk_spacing = walk_spacing.value();
+    if (patchy_option.isSet())
+    {
+      params.patchy = true;
+      params.patch_radius = patchy.value()[0];
+      params.patch_cover = patchy.value()[1];
+      params.matrix_ratio = patchy.value()[2];
+    }
+    if (zenith_option.isSet())
+    {
+      params.min_zenith_deg = zenith.value()[0];
+      params.max_zenith_deg = zenith.value()[1];
+    }
     params.ground_unbounded = !ground_flag.isSet();
     if (footprint_option.isSet())
     {
@@ -281,6 +306,10 @@ int rayCreate(int argc, char *argv[])
     gen.generate(params, static_cast<unsigned int>(seed.value()));
     cloud = gen.cloud();
     if (!gen.writeTruthProfile(type + "_truth.csv", 0.01))
+    {
+      return 1;
+    }
+    if (truth_cells_option.isSet() && !gen.writeTruthCells(type + "_truth_cells.csv", truth_cells.value()))
     {
       return 1;
     }

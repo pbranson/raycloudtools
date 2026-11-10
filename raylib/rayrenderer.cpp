@@ -565,12 +565,28 @@ void DensityGrid::calculateDensities(const std::string &file_name)
       source_ = vox_start;
       dir_ = (vox_end - vox_start).normalized();
       ray_g_ = gFunction(distribution_, dir_);
-      if (ray_g_ < min_g_ || ray_g_ <= 0.0)
+      if (ray_g_ < min_g_ || ray_g_ > max_g_ || ray_g_ <= 0.0)
       {
         num_ignored_rays_++;  // selecting rays on direction alone doesn't bias the estimate
         continue;
       }
-      walkGrid(vox_start, vox_end, *this);
+      hit_voxel_ = Eigen::Vector3d(std::floor(vox_end[0]), std::floor(vox_end[1]), std::floor(vox_end[2])).cast<int>();
+      hit_length_ = (vox_end - vox_start).norm();
+      Eigen::Vector3d walk_end = vox_end;
+      if (bounded_ && path_estimator_ == PathEstimator::Crossing && stem_diameter_ > 0.0)
+      {
+        // extend the ray through the stem's mean internal chord. The G-weighted length of this is pi/4 * width
+        const double hit_range = range_offset_ + (end - start).norm();
+        const double width = stem_width_.enabled() ? stem_width_.width(hit_range) : stem_diameter_;
+        const double extension = std::min(1.0, 0.25 * kPi * width / ray_g_);
+        Eigen::Vector3d ext_start = start;
+        Eigen::Vector3d ext_end = end + (end - start).normalized() * extension;
+        if (bounds_.clipRay(ext_start, ext_end, 1e-10))
+        {
+          walk_end = (ext_end - bounds_.min_bound_) / voxel_width_;
+        }
+      }
+      walkGrid(vox_start, walk_end, *this);
     }
   };
   Cloud::read(file_name, calculate);
@@ -702,6 +718,109 @@ void DensityGrid::addNeighbourPriors()
 #endif
 }
 
+/// The density of a voxel at valid (shifted) index x,y,z, as an average over the voxel
+static double voxelAverageDensity(const DensityGrid &grid, const DensityGrid::Voxel &voxel, int x, int y, int z,
+                                  const Eigen::Vector3i &full_dims, int shift)
+{
+  double d = voxel.density();
+#if defined FLAT_TOP_COMPENSATION
+  // the top voxel's density is estimated for the part below the column's highest point, so scale it to
+  // the voxel average, as is done for the rendered image
+  const double p = grid.peaks_[static_cast<size_t>((x + shift) + full_dims[0] * (y + shift))];
+  const int top_z = p < -10000.0 ? -1 : static_cast<int>(std::floor(p));
+  if (z == top_z - shift)
+  {
+    d *= p - static_cast<double>(top_z);
+  }
+#else
+  RAYLIB_UNUSED(grid);
+  RAYLIB_UNUSED(x);
+  RAYLIB_UNUSED(y);
+  RAYLIB_UNUSED(z);
+  RAYLIB_UNUSED(full_dims);
+  RAYLIB_UNUSED(shift);
+#endif
+  return d;
+}
+
+/// Writes the density of each cell of size @c cell_size (tiling from @c min_bound) to a .csv file. This aggregates the
+/// voxels (whose centres lie in each cell) into cells at a coarser resolution, such as for hydrodynamic models. Two
+/// estimates are output: the mean of the voxel densities, and the pooled estimate (total hits over total G-weighted
+/// path length in the cell). With the beer_lambert estimator, the pooled estimate is identical to estimating with a
+/// single voxel the size of the cell. The fraction of the cell's voxels that were observed is also output.
+static bool writeDensityCells(const std::string &file_name, const DensityGrid &grid, const Eigen::Vector3i &dims,
+                              const Eigen::Vector3i &full_dims, int shift, const Eigen::Vector3d &min_bound,
+                              double pix_width, const Eigen::Vector3d &cell_size)
+{
+  std::ofstream ofs(file_name.c_str(), std::ios::out);
+  if (!ofs.is_open())
+  {
+    std::cerr << "Error: cannot open " << file_name << " for writing" << std::endl;
+    return false;
+  }
+  Eigen::Vector3i num_cells;
+  for (int i = 0; i < 3; i++)
+  {
+    num_cells[i] =
+      std::max(1, static_cast<int>(std::ceil(static_cast<double>(dims[i]) * pix_width / cell_size[i] - 1e-6)));
+  }
+  struct Cell
+  {
+    double sum = 0.0, hits = 0.0, path_length = 0.0;
+    int observed = 0, total = 0;
+  };
+  std::vector<Cell> cells(static_cast<size_t>(num_cells[0] * num_cells[1] * num_cells[2]));
+  for (int z = 0; z < dims[2]; z++)
+  {
+    for (int y = 0; y < dims[1]; y++)
+    {
+      for (int x = 0; x < dims[0]; x++)
+      {
+        const Eigen::Vector3d centre = pix_width * (Eigen::Vector3d(x, y, z) + Eigen::Vector3d(0.5, 0.5, 0.5));
+        Eigen::Vector3i c;
+        for (int i = 0; i < 3; i++)
+        {
+          c[i] = std::min(num_cells[i] - 1, static_cast<int>(centre[i] / cell_size[i]));
+        }
+        Cell &cell = cells[static_cast<size_t>(c[0] + num_cells[0] * (c[1] + num_cells[1] * c[2]))];
+        cell.total++;
+        const DensityGrid::Voxel &voxel = grid.voxels()[grid.getIndex(Eigen::Vector3i(x, y, z))];
+        if (voxel.numRays() > DensityGrid::min_voxel_hits)
+        {
+          cell.sum += voxelAverageDensity(grid, voxel, x, y, z, full_dims, shift);
+          cell.observed++;
+          cell.hits += voxel.numHits();
+          cell.path_length += voxel.pathLength();
+        }
+      }
+    }
+  }
+  const bool cylinders = grid.distribution() == ElementDistribution::VerticalCylinder;
+  const std::string label = cylinders ? "_frontal_area_per_volume_Nd" : "_leaf_area_per_volume";
+  ofs << "x_min,y_min,z_min,x_max,y_max,z_max,observed_fraction,hits,mean_density" << label << ",pooled_density"
+      << label << std::endl;
+  for (int z = 0; z < num_cells[2]; z++)
+  {
+    for (int y = 0; y < num_cells[1]; y++)
+    {
+      for (int x = 0; x < num_cells[0]; x++)
+      {
+        const Cell &cell = cells[static_cast<size_t>(x + num_cells[0] * (y + num_cells[1] * z))];
+        const Eigen::Vector3d cell_min =
+          min_bound + Eigen::Vector3d(x * cell_size[0], y * cell_size[1], z * cell_size[2]);
+        const Eigen::Vector3d cell_max = cell_min + cell_size;
+        ofs << cell_min[0] << "," << cell_min[1] << "," << cell_min[2] << "," << cell_max[0] << "," << cell_max[1]
+            << "," << cell_max[2] << ","
+            << (cell.total > 0 ? static_cast<double>(cell.observed) / static_cast<double>(cell.total) : 0.0) << ","
+            << cell.hits << "," << (cell.observed > 0 ? cell.sum / static_cast<double>(cell.observed) : 0.0) << ","
+            << (cell.path_length > 0.0 ? cell.hits / cell.path_length : 0.0) << std::endl;
+      }
+    }
+  }
+  std::cout << "density cells written to " << file_name << std::endl;
+  return true;
+}
+
 /// Writes the density of each horizontal layer of the grid to a .csv file, both as the mean of the voxel densities
 /// and as the pooled estimate (total hits over total G-weighted path length) across the layer.
 /// The mean of voxel densities is biased high when voxels contain few hits (around +10% at 2-3 hits per voxel), so
@@ -734,18 +853,7 @@ static bool writeDensityProfile(const std::string &file_name, const DensityGrid 
         const DensityGrid::Voxel &voxel = grid.voxels()[grid.getIndex(Eigen::Vector3i(x, y, z))];
         if (voxel.numRays() > DensityGrid::min_voxel_hits)
         {
-          double d = voxel.density();
-#if defined FLAT_TOP_COMPENSATION
-          // the top voxel's density is estimated for the part below the column's highest point, so scale it to
-          // the voxel average, as is done for the rendered image
-          const double p = grid.peaks_[static_cast<size_t>((x + shift) + full_dims[0] * (y + shift))];
-          const int top_z = p < -10000.0 ? -1 : static_cast<int>(std::floor(p));
-          if (z == top_z - shift)
-          {
-            d *= p - static_cast<double>(top_z);
-          }
-#endif
-          sum += d;
+          sum += voxelAverageDensity(grid, voxel, x, y, z, full_dims, shift);
           count++;
           hits += voxel.numHits();
           path_length += voxel.pathLength();
@@ -809,6 +917,14 @@ bool renderCloud(const std::string &cloud_file, const Cuboid &bounds, ViewDirect
       DensityGrid grid(grid_bounds, pix_width, dims, density_options.distribution,
                        cylinders ? density_options.min_sin_zenith : 0.0);
       grid.setPathEstimator(density_options.path_estimator);
+      if (cylinders)
+      {
+        grid.setMaxG(density_options.max_sin_zenith);
+      }
+      if (cylinders && density_options.stem_diameter > 0.0)
+      {
+        grid.setStemDiameter(density_options.stem_diameter);
+      }
       if (cylinders && density_options.footprint.enabled())
       {
         if (density_options.stem_diameter <= 0.0)
@@ -836,8 +952,8 @@ bool renderCloud(const std::string &cloud_file, const Cuboid &bounds, ViewDirect
       grid.calculateDensities(cloud_file);
       if (grid.numIgnoredRays() > 0)
       {
-        std::cout << grid.numIgnoredRays() << " near-vertical rays ignored (sin zenith angle < "
-                  << density_options.min_sin_zenith << ")" << std::endl;
+        std::cout << grid.numIgnoredRays() << " rays ignored outside of the sin zenith angle range "
+                  << density_options.min_sin_zenith << " to " << density_options.max_sin_zenith << std::endl;
       }
 #if defined FLAT_TOP_COMPENSATION
       if (density_options.flat_top_compensation)
@@ -855,6 +971,15 @@ bool renderCloud(const std::string &cloud_file, const Cuboid &bounds, ViewDirect
         const Eigen::Vector3i valid_dims = dims - 2 * Eigen::Vector3i(shift, shift, shift);
         if (!writeDensityProfile(density_options.profile_file, grid, valid_dims, dims, shift, bounds.min_bound_[2],
                                  pix_width))
+        {
+          return false;
+        }
+      }
+      if (!density_options.cells_file.empty())
+      {
+        const Eigen::Vector3i valid_dims = dims - 2 * Eigen::Vector3i(shift, shift, shift);
+        if (!writeDensityCells(density_options.cells_file, grid, valid_dims, dims, shift, bounds.min_bound_, pix_width,
+                               density_options.cell_size))
         {
           return false;
         }
