@@ -470,7 +470,11 @@ void DensityGrid::calculateDensities(const std::string &file_name)
       {
         continue;  // ray is outside of bounds
       }
-      bounded_ = colours[i].alpha > 0;
+      // a ray whose end point was clipped by the bounds has passed through the grid without hitting anything inside
+      // it, so it is treated as a miss. Otherwise its hit would be wrongly counted in the boundary voxel.
+      const double clip_tolerance = 1e-6;
+      const bool end_clipped = (end - ends[i]).squaredNorm() > clip_tolerance * clip_tolerance;
+      bounded_ = colours[i].alpha > 0 && !end_clipped;
       const Eigen::Vector3d vox_start = (start - bounds_.min_bound_) / voxel_width_;
       const Eigen::Vector3d vox_end = (end - bounds_.min_bound_) / voxel_width_;
       source_ = vox_start;

@@ -287,7 +287,9 @@ inline bool DensityGrid::operator()(const Eigen::Vector3i &p, const Eigen::Vecto
   }
   else
   {
-    voxels_[index].addMissRay(static_cast<float>(ray_g_ * (out_length - in_length) * voxel_width_));
+    // end_length, so that rays which end within the voxel without hitting (e.g. zero-alpha ground returns) only
+    // count the path length up to their end point
+    voxels_[index].addMissRay(static_cast<float>(ray_g_ * (end_length - in_length) * voxel_width_));
   }
   return false;
 }

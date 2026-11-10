@@ -515,9 +515,9 @@ TEST(Basic, RayDensityVerticalCylinders)
     std::cout << "zenith " << zenith << " deg: true N*d = " << frontal_area_density
               << ", vertical cylinder estimate = " << cylinder_estimate
               << ", spherical estimate = " << spherical_estimate << std::endl;
-    EXPECT_NEAR(cylinder_estimate, frontal_area_density, 0.1 * frontal_area_density);
+    EXPECT_NEAR(cylinder_estimate, frontal_area_density, 0.05 * frontal_area_density);
     // spherical model returns 2 * G * a with G = sin(zenith)
-    EXPECT_NEAR(spherical_estimate, 2.0 * sin_zenith * frontal_area_density, 0.2 * frontal_area_density);
+    EXPECT_NEAR(spherical_estimate, 2.0 * sin_zenith * frontal_area_density, 0.1 * frontal_area_density);
   }
 }
 
