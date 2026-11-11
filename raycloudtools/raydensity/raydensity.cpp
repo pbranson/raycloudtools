@@ -25,7 +25,8 @@ void usage(int exit_code = 1)
   std::cout << "                     --heights 0,0.6       - range of heights to output, above the ground mesh if given" << std::endl;
   std::cout << "                     --ground mesh.ply     - ground mesh (e.g. from rayextract terrain), for heights above ground" << std::endl;
   std::cout << "                     --halo 0.15           - rays within this distance of the tile are used. At least (and by" << std::endl;
-  std::cout << "                                             default) pool_radius + 2 voxels. Split with 1.5 voxels more (0.225)" << std::endl;
+  std::cout << "                                             default) max(pool_radius, occlusion_radius) + 2" << std::endl;
+  std::cout << "                                             voxels. Split with 1.5 voxels more" << std::endl;
   std::cout << "                     --voxels              - also output the voxel densities" << std::endl;
   std::cout << "                     --density_model spherical - leaf area per volume (default vertical_cylinder: N d)" << std::endl;
   std::cout << "                     --estimator beer_lambert - or crossing (default pooled; see rayrender)" << std::endl;
