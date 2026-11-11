@@ -107,6 +107,12 @@ void DensityGrid::enableOverlapCorrection()
   overlap_path_.assign(voxels_.size(), 0.0f);
 }
 
+void DensityGrid::enableRatioBiasCorrection()
+{
+  path_squares_.assign(voxels_.size(), 0.0f);
+  hit_paths_.assign(voxels_.size(), 0.0f);
+}
+
 void DensityGrid::applyOverlapCorrection()
 {
   const bool pooled = path_estimator_ == PathEstimator::PooledBeerLambert;
@@ -122,22 +128,37 @@ void DensityGrid::applyOverlapCorrection()
   const bool correct = !overlap_path_.empty() && path_estimator_ != PathEstimator::Crossing;
   // the self-shadow correction applies to the pooled neighbourhoods, and needs the stem diameter
   const bool self_shadow = self_shadow_correction_ && pooled && stem_diameter_ > 0.0;
-  if (self_shadow)
+  const bool second_order = self_shadow && self_shadow_second_order_;
+  // the finite-ray correction of each neighbourhood's ratio, by the delta method (see ratio_bias_correction)
+  const bool ratio_bias = pooled && !path_squares_.empty();
+  // the occlusion response is inverted at the density of a separate (larger) neighbourhood (see occlusion_radius)
+  const bool decoupled = correct && pooled && occlusion_radius_ >= 0.0;
+  const int occlusion_radius =
+    decoupled ? std::max(0, static_cast<int>(std::round(occlusion_radius_ / voxel_width_))) : radius;
+  if (decoupled)
+  {
+    std::cout << "inverting the occlusion response over neighbourhoods of " << 2 * occlusion_radius + 1 << " x "
+              << 2 * occlusion_radius + 1 << " voxels" << std::endl;
+  }
+  if (self_shadow || ratio_bias)
   {
     uncorrected_scale_.assign(voxels_.size(), 1.0f);
   }
-  // the mean exit distance of the neighbourhood, per width in voxels (they are narrower at the grid's edges)
-  std::vector<double> exit_distance(static_cast<size_t>((2 * radius + 1) * (2 * radius + 1)), 0.0);
-  for (int i = 0; i < 2 * radius + 1; i++)
+  // the mean exit distance of the neighbourhoods, per width in voxels (they are narrower at the grid's edges)
+  const int max_width = 2 * std::max(radius, occlusion_radius) + 1;
+  std::vector<double> exit_distance(static_cast<size_t>(max_width * max_width), 0.0);
+  for (int i = 0; i < max_width; i++)
   {
-    for (int j = 0; j < 2 * radius + 1 && self_shadow; j++)
+    for (int j = 0; j < max_width && self_shadow; j++)
     {
-      exit_distance[static_cast<size_t>(i + (2 * radius + 1) * j)] =
+      exit_distance[static_cast<size_t>(i + max_width * j)] =
         meanExitDistance(voxel_width_ * (i + 1), voxel_width_ * (j + 1));
     }
   }
   double sum_shadow_factor = 0.0;
   size_t num_shadow = 0;
+  double sum_ratio_factor = 0.0;
+  size_t num_ratio = 0;
   StemResponseTable table(min_gap_ratio_, range_to_outline_);
   size_t num_corrected = 0, num_saturated = 0;
   double sum_factor = 0.0, sum_k_path = 0.0, sum_path = 0.0;
@@ -146,16 +167,66 @@ void DensityGrid::applyOverlapCorrection()
   const int nx = voxel_dims_[0], ny = voxel_dims_[1];
   const size_t table_size = static_cast<size_t>(nx + 1) * static_cast<size_t>(ny + 1);
   std::vector<double> sum_hits(table_size), sum_paths(table_size), sum_k_paths(table_size);
+  std::vector<double> sum_path_squares(ratio_bias ? table_size : 0), sum_hit_paths(ratio_bias ? table_size : 0);
   auto at = [&](int x, int y) { return static_cast<size_t>(x) + static_cast<size_t>(nx + 1) * static_cast<size_t>(y); };
   auto box = [&](const std::vector<double> &sat, int x0, int y0, int x1, int y1) {
     // sum over x0 <= x < x1, y0 <= y < y1
     return sat[at(x1, y1)] - sat[at(x0, y1)] - sat[at(x1, y0)] + sat[at(x0, y0)];
   };
+  // the sums of the neighbourhood of half-width r voxels around a voxel of the current layer
+  struct Window
+  {
+    double hits = 0.0, path = 0.0, k_path = 0.0;
+    double measured = 0.0;   // hits / path
+    double corrected = 0.0;  // measured, with the finite-ray correction when enabled
+    double rho = 1.0;        // the (G rho L)-weighted mean ratio of effective width to diameter
+    int width_x = 1, width_y = 1;
+  };
+  double path_tolerance = 0.0, hits_tolerance = 0.0;
+  auto window = [&](int x, int y, int r, Window &win) {
+    const int x0 = std::max(0, x - r), x1 = std::min(nx, x + r + 1);
+    const int y0 = std::max(0, y - r), y1 = std::min(ny, y + r + 1);
+    win.width_x = x1 - x0;
+    win.width_y = y1 - y0;
+    // the differences of the sums have rounding errors relative to the layer's totals, so ignore residuals
+    win.hits = box(sum_hits, x0, y0, x1, y1);
+    win.path = box(sum_paths, x0, y0, x1, y1);
+    win.k_path = box(sum_k_paths, x0, y0, x1, y1);
+    if (win.path <= path_tolerance)
+    {
+      return false;
+    }
+    win.hits = win.hits > hits_tolerance ? win.hits : 0.0;
+    win.measured = win.hits / win.path;
+    win.corrected = win.measured;
+    if (ratio_bias && win.hits > 0.0)
+    {
+      // the delta method estimate of the bias of a ratio of sums over the rays' segments i, of hits h_i and paths
+      // p_i, is (m sum p_i^2 - sum h_i p_i) / P^2 for m = H / P. It is at most m, as sum p_i^2 <= P^2
+      const double inv_path2 = 1.0 / (win.path * win.path);
+      win.corrected = std::max(0.0, win.measured * (1.0 - box(sum_path_squares, x0, y0, x1, y1) * inv_path2) +
+                                      box(sum_hit_paths, x0, y0, x1, y1) * inv_path2);
+    }
+    win.rho = win.k_path > 0.0 ? win.k_path / win.path : 1.0;
+    return true;
+  };
+  // the self-shadow factor of a neighbourhood (see DensityOptions::self_shadow_correction), given the frontal density
+  // N d_eff for the second order's density term
+  auto shadow_factor = [&](const Window &win, double frontal_density) {
+    const double area = voxel_width_ * voxel_width_ * static_cast<double>(win.width_x * win.width_y);
+    const double exit = exit_distance[static_cast<size_t>((win.width_x - 1) + max_width * (win.width_y - 1))];
+    if (!second_order)
+    {
+      return 1.0 + exit * win.rho * stem_diameter_ / area;
+    }
+    return selfShadowFactor(exit, area, win.rho * stem_diameter_, stem_diameter_, frontal_density * exit,
+                            range_to_outline_);
+  };
   for (int z = 0; z < voxel_dims_[2]; z++)
   {
     for (int y = 0; y < ny; y++)
     {
-      double row_hits = 0.0, row_path = 0.0, row_k_path = 0.0;
+      double row_hits = 0.0, row_path = 0.0, row_k_path = 0.0, row_path_squares = 0.0, row_hit_paths = 0.0;
       for (int x = 0; x < nx; x++)
       {
         const int ind = getIndex(Eigen::Vector3i(x, y, z));
@@ -165,10 +236,17 @@ void DensityGrid::applyOverlapCorrection()
         sum_hits[at(x + 1, y + 1)] = sum_hits[at(x + 1, y)] + row_hits;
         sum_paths[at(x + 1, y + 1)] = sum_paths[at(x + 1, y)] + row_path;
         sum_k_paths[at(x + 1, y + 1)] = sum_k_paths[at(x + 1, y)] + row_k_path;
+        if (ratio_bias)
+        {
+          row_path_squares += path_squares_[static_cast<size_t>(ind)];
+          row_hit_paths += hit_paths_[static_cast<size_t>(ind)];
+          sum_path_squares[at(x + 1, y + 1)] = sum_path_squares[at(x + 1, y)] + row_path_squares;
+          sum_hit_paths[at(x + 1, y + 1)] = sum_hit_paths[at(x + 1, y)] + row_hit_paths;
+        }
       }
     }
-    const double path_tolerance = 1e-9 * sum_paths[at(nx, ny)] + 1e-12;
-    const double hits_tolerance = 1e-9 * sum_hits[at(nx, ny)] + 1e-6;
+    path_tolerance = 1e-9 * sum_paths[at(nx, ny)] + 1e-12;
+    hits_tolerance = 1e-9 * sum_hits[at(nx, ny)] + 1e-6;
     for (int y = 0; y < ny; y++)
     {
       for (int x = 0; x < nx; x++)
@@ -178,45 +256,82 @@ void DensityGrid::applyOverlapCorrection()
         {
           continue;
         }
-        const int x0 = std::max(0, x - radius), x1 = std::min(nx, x + radius + 1);
-        const int y0 = std::max(0, y - radius), y1 = std::min(ny, y + radius + 1);
-        // the differences of the sums have rounding errors relative to the layer's totals, so ignore residuals
-        double hits = box(sum_hits, x0, y0, x1, y1);
-        const double path = box(sum_paths, x0, y0, x1, y1);
-        const double k_path = box(sum_k_paths, x0, y0, x1, y1);
-        if (path <= path_tolerance)
+        Window win;
+        if (!window(x, y, radius, win))
         {
           continue;
         }
-        hits = hits > hits_tolerance ? hits : 0.0;
-        const double measured = hits / path;  // local measured density
+        const double measured = win.measured;  // local measured density
+        // the occlusion correction's neighbourhood, which is the pooling one unless decoupled
+        Window occ = win;
+        const bool occ_valid = !decoupled || window(x, y, occlusion_radius, occ);
         double factor = 1.0;
-        // the self-shadow factor 1 + s d_eff / W^2 of this neighbourhood (see DensityOptions::self_shadow_correction)
-        double shadow_factor = 1.0;
+        // the self-shadow factors of this neighbourhood and the occlusion one
+        double shadow = 1.0, occ_shadow = 1.0;
         if (self_shadow && measured > 0.0)
         {
-          const double rho = k_path > 0.0 ? k_path / path : 1.0;
-          const double area = voxel_width_ * voxel_width_ * static_cast<double>((x1 - x0) * (y1 - y0));
-          shadow_factor = 1.0 + exit_distance[static_cast<size_t>((x1 - x0 - 1) + (2 * radius + 1) * (y1 - y0 - 1))] *
-                                  rho * stem_diameter_ / area;
-          sum_shadow_factor += shadow_factor;
+          // the frontal density N d_eff = a rho, estimated from the occlusion neighbourhood (which is less noisy when
+          // decoupled), to first order in the self-shadow and ignoring the occlusion response
+          double frontal = 0.0;
+          if (second_order && occ_valid)
+          {
+            const double area = voxel_width_ * voxel_width_ * static_cast<double>(occ.width_x * occ.width_y);
+            const double exit = exit_distance[static_cast<size_t>((occ.width_x - 1) + max_width * (occ.width_y - 1))];
+            frontal = occ.corrected * occ.rho / (1.0 + exit * occ.rho * stem_diameter_ / area);
+          }
+          shadow = shadow_factor(win, frontal);
+          occ_shadow = decoupled ? (occ_valid && occ.measured > 0.0 ? shadow_factor(occ, frontal) : 1.0) : shadow;
+          sum_shadow_factor += shadow;
           num_shadow++;
-          factor = 1.0 / shadow_factor;
         }
-        if (correct && k_path > 0.0 && measured > 0.0)
+        // the measured density without the self-shadow and finite-ray biases
+        const double corrected = win.corrected / shadow;
+        if (ratio_bias && measured > 0.0)
+        {
+          sum_ratio_factor += win.corrected / measured;
+          num_ratio++;
+        }
+        if (correct && win.k_path > 0.0 && measured > 0.0)
         {
           // measured = a R(pi d a / 4, rho) for true density a = N d
-          const double rho = k_path / path;  // the (G rho L)-weighted mean ratio of effective width to diameter
           bool saturated = false;
-          const double a = invertStemResponse(measured / shadow_factor, rho, stem_diameter_, min_gap_ratio_,
-                                              max_solid_fraction_, table, saturated);
+          double a = 0.0, a_uncorrected = 0.0;
+          if (decoupled)
+          {
+            // the factor a / measured of the occlusion neighbourhood, applied to this neighbourhood's density
+            const double occ_corrected = occ_valid ? occ.corrected / occ_shadow : 0.0;
+            double occ_factor = 1.0, occ_factor_uncorrected = 1.0;
+            if (occ_corrected > 0.0 && occ.k_path > 0.0)
+            {
+              occ_factor = invertStemResponse(occ_corrected, occ.rho, stem_diameter_, min_gap_ratio_,
+                                              max_solid_fraction_, table, saturated) /
+                           occ_corrected;
+              if (self_shadow || ratio_bias)
+              {
+                bool unused = false;
+                occ_factor_uncorrected = invertStemResponse(occ.measured, occ.rho, stem_diameter_, min_gap_ratio_,
+                                                            max_solid_fraction_, table, unused) /
+                                         occ.measured;
+              }
+            }
+            a = corrected * occ_factor;
+            a_uncorrected = measured * occ_factor_uncorrected;
+          }
+          else
+          {
+            a = invertStemResponse(corrected, win.rho, stem_diameter_, min_gap_ratio_, max_solid_fraction_, table,
+                                   saturated);
+            if (self_shadow || ratio_bias)
+            {
+              bool unused = false;
+              a_uncorrected = invertStemResponse(measured, win.rho, stem_diameter_, min_gap_ratio_, max_solid_fraction_,
+                                                 table, unused);
+            }
+          }
           num_saturated += saturated ? 1 : 0;
-          if (self_shadow)
+          if (self_shadow || ratio_bias)
           {
             // the uncorrected density, for the pooled cell density
-            bool unused = false;
-            const double a_uncorrected =
-              invertStemResponse(measured, rho, stem_diameter_, min_gap_ratio_, max_solid_fraction_, table, unused);
             uncorrected_scale_[static_cast<size_t>(ind)] = static_cast<float>(a > 0.0 ? a_uncorrected / a : 1.0);
           }
           factor = a / measured;
@@ -225,9 +340,10 @@ void DensityGrid::applyOverlapCorrection()
           sum_k_path += overlap_path_[static_cast<size_t>(ind)];
           sum_path += voxels_[ind].pathLength();
         }
-        else if (self_shadow)
+        else if ((self_shadow || ratio_bias) && measured > 0.0)
         {
-          uncorrected_scale_[static_cast<size_t>(ind)] = static_cast<float>(shadow_factor);
+          factor = corrected / measured;
+          uncorrected_scale_[static_cast<size_t>(ind)] = static_cast<float>(factor > 0.0 ? 1.0 / factor : 1.0);
         }
         // for the pooled estimator, the voxel takes the neighbourhood's density, keeping its own path length
         voxels_[ind].numHits() =
@@ -238,8 +354,14 @@ void DensityGrid::applyOverlapCorrection()
   pooled_densities_ = pooled;
   if (num_shadow > 0)
   {
-    std::cout << "self-shadow correction: mean factor " << sum_shadow_factor / static_cast<double>(num_shadow)
-              << " over " << num_shadow << " neighbourhoods" << std::endl;
+    std::cout << "self-shadow correction" << (second_order ? " (second order)" : "") << ": mean factor "
+              << sum_shadow_factor / static_cast<double>(num_shadow) << " over " << num_shadow << " neighbourhoods"
+              << std::endl;
+  }
+  if (num_ratio > 0)
+  {
+    std::cout << "finite-ray correction: mean factor " << sum_ratio_factor / static_cast<double>(num_ratio) << " over "
+              << num_ratio << " neighbourhoods" << std::endl;
   }
   if (num_corrected > 0 && sum_path > 0.0)
   {
@@ -315,7 +437,7 @@ void DensityGrid::addNeighbourPriors()
           uncorrected_scale_[static_cast<size_t>(ind - X - Y - Z)] = uncorrected_scale_[static_cast<size_t>(ind)];
         }
         DensityGrid::Voxel &voxel = voxels_[ind - X - Y - Z];
-        if (needed < 0.0 || (!fill_unobserved_priors_ && voxel.numRays() <= 0.0f))
+        if (needed < 0.0 || !blend_priors_ || (!fill_unobserved_priors_ && voxel.numRays() <= 0.0f))
           continue;
         neighbours = voxels_[ind - X];
         neighbours += voxels_[ind + X];
@@ -447,6 +569,14 @@ std::unique_ptr<DensityGrid> estimateDensityGrid(const std::string &cloud_file, 
   grid.setPoolRadius(options.pool_radius);
   grid.setMinGapRatio(options.min_gap_ratio);
   grid.setSelfShadowCorrection(cylinders && options.self_shadow_correction);
+  grid.setSelfShadowSecondOrder(options.self_shadow_second_order);
+  grid.setOcclusionRadius(options.occlusion_radius);
+  const bool pooled = options.path_estimator == PathEstimator::PooledBeerLambert;
+  if (pooled && options.ratio_bias_correction)
+  {
+    grid.enableRatioBiasCorrection();
+  }
+  grid.setBlendNeighbourPriors(!pooled || options.pooled_neighbour_priors);
   if (cylinders)
   {
     grid.setMaxG(options.max_sin_zenith);

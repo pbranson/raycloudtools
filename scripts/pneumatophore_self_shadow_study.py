@@ -14,8 +14,14 @@ over the seeds:
   observed         the mean observed fraction of the cells' voxels
   H1               the first-order prediction 1 + s d_eff / W^2 (s = 0.4732 W for the square window of width W, d_eff
                    the mean effective width reported by rayrender)
-Writes <out>/rows.csv (one row per seed) and <out>/summary.txt. Example:
+  obs>=0.9         density/truth over the cells whose observed fraction is at least 0.9 (and the mean number of them)
+Writes <out>/rows.csv (one row per seed, with the observed-fraction bins), <out>/summary.txt and <out>/compact.txt
+(case x variant tables). Example:
   scripts/pneumatophore_self_shadow_study.py --sets density,window --seeds 101,102,103 --out study
+The small-window sets: K (voxel x pool radius, with and without the first-order correction, at 1/4, 1/2 and 1 of
+the standard ray density), K2 (the same scenes for the small-window configuration SMALL_WINDOW and its ablations),
+K3 (stem diameter and footprint) and K4 (assumed diameter +-20%), e.g.
+  scripts/pneumatophore_self_shadow_study.py --sets K2,K3,K4 --seeds 101,102,103,104 --jobs 2 --out small_window
 """
 import argparse
 import csv
@@ -26,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from concurrent.futures import ProcessPoolExecutor
 
 FOOTPRINT = "0.01,0.003,0.05"  # the default scanner model: 1 cm exit diameter, 3 mrad, 5% threshold
@@ -44,12 +51,34 @@ def variants(footprint=FOOTPRINT, diameter=0.01, voxel=0.05, pool=0.05, extra=""
     return [("base", base), ("ss", base + " --self_shadow_correction")]
 
 
+# the small-window configuration (rayrender options added to --pool_radius 0)
+SMALL_WINDOW = ("--self_shadow_correction --self_shadow_second_order --occlusion_radius 0.05 --ratio_bias_correction "
+                "--no_neighbour_priors")
+
+
+def small_window_variants(footprint=FOOTPRINT, diameter=0.01, short=False):
+    """the default window (with and without the first-order correction), the first-order correction with single
+    voxels, the small-window configuration (sw) and, unless short, its ablations"""
+    default = render_args(footprint, diameter, 0.05, 0.05)
+    single = render_args(footprint, diameter, 0.05, 0.0)
+    v = [("default", default), ("default ss", default + " --self_shadow_correction"),
+         ("p0 ss", single + " --self_shadow_correction"), ("sw", single + " " + SMALL_WINDOW)]
+    if not short:
+        v += [("sw first order", single + " " + SMALL_WINDOW.replace("--self_shadow_second_order ", "")),
+              ("sw coupled", single + " " + SMALL_WINDOW.replace("--occlusion_radius 0.05 ", "")),
+              ("sw no ratio", single + " " + SMALL_WINDOW.replace("--ratio_bias_correction ", "")),
+              ("sw priors", single + " " + SMALL_WINDOW.replace(" --no_neighbour_priors", "")),
+              ("sw v0.025p0.025", render_args(footprint, diameter, 0.025, 0.025) + " " + SMALL_WINDOW)]
+    return v
+
+
 def scene(stems, footprint=FOOTPRINT, extra=""):
     fp = f"--footprint {footprint} " if footprint else ""
     return f"--stems_per_m2 {stems} {fp}{extra}"
 
 
 LOW = [0.0, 0.1]  # the lowest two 0.1 m layers
+OBS_BINS = (0.9, 0.7, 0.5, 0.0)  # lower limits of the observed-fraction bins (cells in the first bin they reach)
 MID = [0.1, 0.2, 0.3]  # layers below the tops of 0.6 m stems, away from the ground
 
 
@@ -124,6 +153,42 @@ def build_cases():
         ("300/m2 range noise 1 cm", scene(300, extra="--range_noise 0.01"), variants(), LOW, 0.01),
         ("300/m2 pose noise 2 cm", scene(300, extra="--pose_noise 0.02,1"), variants(), LOW, 0.01),
     ]
+    # block K (small windows): voxel x pool radius, with and without the self-shadow correction, over stem densities,
+    # patches and cable roots, at 1/4, 1/2 and the standard ray density
+    k_windows = ((0.05, 0.0), (0.025, 0.025), (0.05, 0.05), (0.025, 0.0))
+    k_variants = []
+    for voxel, pool in k_windows:
+        k_variants += [(f"v{voxel}p{pool} {name}", args) for name, args in variants(voxel=voxel, pool=pool)]
+    k_scenes = [(f"random {n}/m2", scene(n)) for n in (30, 100, 300, 600, 1000, 1500)]
+    k_scenes += [(f"patches r{r} 30% 300/m2", scene(300, extra=f"--patchy {r},0.3,0")) for r in (0.2, 0.3, 0.5)]
+    k_scenes += [(f"cable roots {n}/m2", scene(n, extra="--clustered")) for n in (150, 500)]
+    cases["K"] = [(f"{label}, rays x{scale}", args, k_variants, LOW, 0.01, scale)
+                  for label, args in k_scenes for scale in (0.25, 0.5, 1.0)]
+    # the same scenes for the small-window configuration (sw: single 0.05 m voxels with the second-order self-shadow
+    # factor, the occlusion response inverted over 3 x 3 voxels, the finite-ray correction and no neighbour priors),
+    # its ablations, and the default window with and without the first-order correction
+    cases["K2"] = [(f"{label}, rays x{scale}", args, small_window_variants(), LOW, 0.01, scale)
+                   for label, args in k_scenes for scale in (0.25, 0.5, 1.0)]
+    # stem diameter and footprint, at the standard and a quarter of the ray density
+    k3 = [(f"d 0.005 m, {n}/m2", scene(n, extra="--diameter 0.005"), 0.005, FOOTPRINT) for n in (300, 1500)]
+    k3 += [(f"d 0.02 m, {n}/m2", scene(n, extra="--diameter 0.02"), 0.02, FOOTPRINT) for n in (30, 300)]
+    k3 += [(f"no footprint, {n}/m2", scene(n, footprint=""), 0.01, "") for n in (300, 1000)]
+    k3 += [(f"wide footprint, {n}/m2", scene(n, footprint=WIDE), 0.01, WIDE) for n in (100, 300, 1000)]
+    cases["K3"] = [(f"{label}, rays x{scale}", args, small_window_variants(footprint=fp, diameter=d, short=True), LOW,
+                    d, scale) for label, args, d, fp in k3 for scale in (0.25, 1.0)]
+    # stems of one height (0.6 m, so no stem tops in the layers below 0.5 m) and overlapping (Poisson) stems, to judge
+    # the second-order factor away from the stem tops
+    k5 = [(f"height 0.6 m, {n}/m2", scene(n, extra="--height 0.6,0")) for n in (30, 300, 1000)]
+    k5 += [("overlapping 300/m2", scene(300, extra="--overlapping"))]
+    cases["K5"] = [(f"{label}, rays x{scale}", args, small_window_variants(short=True), [0.0, 0.1, 0.2, 0.3], 0.01,
+                    scale) for label, args in k5 for scale in (0.25, 1.0)]
+    # assumed diameter error of +-20% (true 1 cm), render only
+    cases["K4"] = []
+    for n in (300, 1000):
+        v = []
+        for d in (0.008, 0.012):
+            v += [(f"{name} d={d}", a) for name, a in small_window_variants(diameter=d, short=True)]
+        cases["K4"].append((f"random {n}/m2, assumed d", scene(n), v, LOW, 0.01))
     return cases
 
 
@@ -144,7 +209,7 @@ def key(row):
 
 
 def run_case(job):
-    set_name, label, scene_args, render_variants, layers, diameter, seed, args = job
+    set_name, label, scene_args, render_variants, layers, diameter, ray_scale, seed, args = job
     work = tempfile.mkdtemp(prefix="ss_", dir=args.tmp)
     rows = []
     try:
@@ -155,7 +220,7 @@ def run_case(job):
         if m:
             walk = float(m.group(1))
         num_lines = max(1, int(args.plot_width / walk))
-        rays = int(args.rays_per_m * args.plot_width * num_lines)
+        rays = int(args.rays_per_m * ray_scale * args.plot_width * num_lines)
         top = max(layers) + 0.1
         run(f"cd {work} && raycreate pneumatophores {seed} {scene_args} --plot_width {args.plot_width} "
             f"--rays {rays} --truth_cells 1,1,0.1", log)
@@ -166,9 +231,11 @@ def run_case(job):
             rlog = os.path.join(work, "render.txt")
             if os.path.exists(rlog):
                 os.remove(rlog)
+            start = time.time()
             run(f"cd {work} && rayrender pneumatophores.ply top density --density_model vertical_cylinder --no_flat_top "
                 f"{render} --min_bound {-half},{-half},0 --max_bound {half},{half},{top} --cells cells.csv "
                 f"--cell_size 1,1,0.1", rlog)
+            render_time = time.time() - start
             text = open(rlog).read()
             m = re.search(r"mean effective width / diameter of ([0-9.e+-]+)", text)
             rho = float(m.group(1)) if m else 1.0
@@ -183,6 +250,9 @@ def run_case(job):
                 zr = round(z, 4)
                 est = pooled = tr = obs = sq = 0.0
                 count = 0
+                # cells with observed fraction >= 0.9, and the sums per observed-fraction bin
+                est9 = tr9 = 0.0
+                bins = {b: [0.0, 0.0] for b in OBS_BINS}
                 for c in cells:
                     kk = key(c)
                     if kk[2] != zr or kk not in truth:
@@ -195,14 +265,31 @@ def run_case(job):
                     pooled += pool_d
                     tr += truth[kk]
                     sq += (dens - truth[kk]) ** 2
-                    obs += float(c["observed_fraction"]) if not math.isnan(float(c["observed_fraction"])) else 0.0
+                    frac = float(c["observed_fraction"])
+                    frac = 0.0 if math.isnan(frac) else frac
+                    obs += frac
                     count += 1
+                    if frac >= 0.9:
+                        est9 += dens
+                        tr9 += truth[kk]
+                    for b in OBS_BINS:
+                        if frac >= b:
+                            bins[b][0] += dens
+                            bins[b][1] += truth[kk]
+                            break
                 if count == 0 or tr <= 0.0:
                     continue
-                rows.append(dict(set=set_name, case=label, variant=name, seed=seed, z_min=z, truth=tr / count,
-                                 density_ratio=est / tr, pooled_ratio=pooled / tr, observed=obs / count,
-                                 cell_rel_rmse=math.sqrt(sq / count) / (tr / count), rho=rho,
-                                 window=window, h1=h1))
+                row = dict(set=set_name, case=label, variant=name, seed=seed, z_min=z, truth=tr / count,
+                           density_ratio=est / tr, pooled_ratio=pooled / tr, observed=obs / count,
+                           cell_rel_rmse=math.sqrt(sq / count) / (tr / count), rho=rho,
+                           window=window, h1=h1, rays=rays, render_s=render_time,
+                           density_ratio_obs90=est9 / tr9 if tr9 > 0 else float("nan"),
+                           cells_obs90=sum(1 for c in cells if round(float(c["z_min"]), 4) == zr and
+                                           not math.isnan(float(c["observed_fraction"])) and
+                                           float(c["observed_fraction"]) >= 0.9))
+                for b in OBS_BINS:
+                    row[f"ratio_obs{b:g}"] = bins[b][0] / bins[b][1] if bins[b][1] > 0 else float("nan")
+                rows.append(row)
     finally:
         if not args.keep:
             shutil.rmtree(work, ignore_errors=True)
@@ -221,21 +308,52 @@ def summarise(rows, out):
     groups = {}
     for r in rows:
         groups.setdefault((r["set"], r["case"], r["variant"], r["z_min"]), []).append(r)
-    lines = ["set | case | variant | z | n | density/truth | pooled/truth | mean/pooled | observed | cell rel. RMSE | "
-             "H1 (W, rho)"]
+    lines = ["set | case | variant | z | n | density/truth | obs>=0.9 density/truth (cells) | pooled/truth | "
+             "mean/pooled | observed | cell rel. RMSE | H1 (W, rho) | render s"]
     for (set_name, case, variant, z), rs in groups.items():
         d = mean_se([r["density_ratio"] for r in rs])
         p = mean_se([r["pooled_ratio"] for r in rs])
         mp = mean_se([r["density_ratio"] / r["pooled_ratio"] for r in rs if r["pooled_ratio"] > 0])
         o = mean_se([r["observed"] for r in rs])
         e = mean_se([r["cell_rel_rmse"] for r in rs])
+        v9 = [r["density_ratio_obs90"] for r in rs if not math.isnan(r["density_ratio_obs90"])]
+        d9 = mean_se(v9) if v9 else (float("nan"), float("nan"))
+        cells9 = sum(r["cells_obs90"] for r in rs) / len(rs)
+        t = sum(r["render_s"] for r in rs) / len(rs)
         lines.append(f"{set_name} | {case} | {variant} | {z:.1f} | {len(rs)} | {d[0]:.3f} ± {d[1]:.3f} | "
+                     f"{d9[0]:.3f} ± {d9[1]:.3f} ({cells9:.1f}) | "
                      f"{p[0]:.3f} ± {p[1]:.3f} | {mp[0]:.3f} ± {mp[1]:.3f} | {o[0]:.2f} | {e[0]:.3f} | "
-                     f"{rs[0]['h1']:.3f} ({rs[0]['window']:.3f}, {rs[0]['rho']:.2f})")
+                     f"{rs[0]['h1']:.3f} ({rs[0]['window']:.3f}, {rs[0]['rho']:.2f}) | {t:.2f}")
     text = "\n".join(lines) + "\n"
     with open(os.path.join(out, "summary.txt"), "w") as f:
         f.write(text)
     print(text)
+    compact(rows, out)
+
+
+def compact(rows, out):
+    """<out>/compact.txt: one row per case and layer, one column per variant, of density/truth (mean +- s.e. over the
+    seeds) over all cells, and in brackets over the cells with observed fraction >= 0.9"""
+    groups, names = {}, []
+    for r in rows:
+        groups.setdefault((r["set"], r["case"], r["z_min"]), {}).setdefault(r["variant"], []).append(r)
+        if r["variant"] not in names:
+            names.append(r["variant"])
+    lines = ["set | case | z | observed | " + " | ".join(names)]
+    for (set_name, case, z), vs in groups.items():
+        cols = []
+        for name in names:
+            rs = vs.get(name)
+            if not rs:
+                cols.append("-")
+                continue
+            d = mean_se([r["density_ratio"] for r in rs])
+            v9 = [r["density_ratio_obs90"] for r in rs if not math.isnan(r["density_ratio_obs90"])]
+            cols.append(f"{d[0]:.3f} ± {d[1]:.3f} [{mean_se(v9)[0]:.3f}]" if v9 else f"{d[0]:.3f} ± {d[1]:.3f} [-]")
+        observed = sum(r["observed"] for r in next(iter(vs.values()))) / len(next(iter(vs.values())))
+        lines.append(f"{set_name} | {case} | {z:.1f} | {observed:.2f} | " + " | ".join(cols))
+    with open(os.path.join(out, "compact.txt"), "w") as f:
+        f.write("\n".join(lines) + "\n")
 
 
 def main():
@@ -259,11 +377,13 @@ def main():
     sets = list(cases) if args.sets == "all" else args.sets.split(",")
     jobs = []
     for s in sets:
-        for label, scene_args, render_variants, layers, diameter in cases[s]:
+        for case in cases[s]:
+            label, scene_args, render_variants, layers, diameter = case[:5]
+            ray_scale = case[5] if len(case) > 5 else 1.0
             if args.cases and args.cases not in label:
                 continue
             for seed in (int(v) for v in args.seeds.split(",")):
-                jobs.append((s, label, scene_args, render_variants, layers, diameter, seed, args))
+                jobs.append((s, label, scene_args, render_variants, layers, diameter, ray_scale, seed, args))
     rows = []
     with ProcessPoolExecutor(max_workers=args.jobs) as pool:
         for result in pool.map(run_case, jobs):

@@ -75,6 +75,19 @@ void usage(int exit_code = 1)
   std::cout << "                     --self_shadow_correction - with --estimator pooled and --stem_diameter: correct the" << std::endl;
   std::cout << "                                             neighbourhoods for the shadow each stem casts within its own" << std::endl;
   std::cout << "                                             neighbourhood (experimental; the mean density reads high without)" << std::endl;
+  std::cout << "                     --self_shadow_second_order - with --self_shadow_correction: the second-order factor," << std::endl;
+  std::cout << "                                             for small neighbourhoods (e.g. --pool_radius 0)" << std::endl;
+  std::cout << "                     --occlusion_radius 0.05 - with --estimator pooled: invert the stem occlusion correction" << std::endl;
+  std::cout << "                                             at the density of this (larger) neighbourhood, and apply its" << std::endl;
+  std::cout << "                                             factor to the pooled one (default: the pooled neighbourhood)" << std::endl;
+  std::cout << "                     --ratio_bias_correction - with --estimator pooled: correct each neighbourhood's" << std::endl;
+  std::cout << "                                             hits/path for its finite number of rays (delta method)" << std::endl;
+  std::cout << "                     --no_neighbour_priors - with --estimator pooled: don't blend voxels of under 10 rays" << std::endl;
+  std::cout << "                                             with their neighbours (it biases small neighbourhoods low)" << std::endl;
+  std::cout << "                                             Single-voxel neighbourhoods (experimental): --pool_radius 0" << std::endl;
+  std::cout << "                                             --self_shadow_correction --self_shadow_second_order" << std::endl;
+  std::cout << "                                             --occlusion_radius 0.05 --ratio_bias_correction" << std::endl;
+  std::cout << "                                             --no_neighbour_priors" << std::endl;
   std::cout << "                     --no_flat_top         - for density styles: disable the flat canopy top model" << std::endl;
   std::cout << "                                             (designed for grass/crops, it biases uneven stems)" << std::endl;
   std::cout << "                     --min_bound x,y,z     - optional bounds of the region to render, otherwise" << std::endl;
@@ -95,11 +108,14 @@ int rayRender(int argc, char *argv[])
   ray::Vector3dArgument footprint(0.0, 1.0), min_bound(-1e10, 1e10), max_bound(-1e10, 1e10);
   ray::Vector3dArgument cell_size(0.0001, 1e6, Eigen::Vector3d(1.0, 1.0, 0.1));
   ray::DoubleArgument max_sin_zenith(0.0, 1.0), pool_radius(0.0, 100.0), min_gap(0.0, 100.0);
+  ray::DoubleArgument occlusion_radius(0.0, 100.0);
   ray::FileArgument cells_file(false);
   ray::IntArgument resolution(1, 20000, 512);
   ray::FileArgument cloud_file, image_file, transform_file, projection_file(false), profile_file(false);
   ray::OptionalFlagArgument mark_origin("mark_origin", 'm'), view_flag("view", 'v'), no_flat_top("no_flat_top", 'u'),
-    no_overlap("no_overlap_correction", 'k'), self_shadow("self_shadow_correction", 'w');
+    no_overlap("no_overlap_correction", 'k'), self_shadow("self_shadow_correction", 'w'),
+    second_order("self_shadow_second_order", 'S'), ratio_bias("ratio_bias_correction", 'R'),
+    no_priors("no_neighbour_priors", 'N');
   ray::KeyChoice return_range({ "surface", "outline" });
   ray::OptionalKeyValueArgument return_range_option("return_range", 'j', &return_range);
   ray::OptionalKeyValueArgument resolution_option("resolution", 'r', &resolution);
@@ -117,6 +133,7 @@ int rayRender(int argc, char *argv[])
   ray::OptionalKeyValueArgument max_sin_zenith_option("max_sin_zenith", 'y', &max_sin_zenith);
   ray::OptionalKeyValueArgument pool_radius_option("pool_radius", 'q', &pool_radius);
   ray::OptionalKeyValueArgument min_gap_option("min_gap", 'a', &min_gap);
+  ray::OptionalKeyValueArgument occlusion_radius_option("occlusion_radius", 'O', &occlusion_radius);
   ray::OptionalKeyValueArgument stem_diameter_option("stem_diameter", 's', &stem_diameter);
   ray::OptionalKeyValueArgument footprint_option("footprint", 'b', &footprint);
   ray::OptionalKeyValueArgument min_bound_option("min_bound", 'n', &min_bound);
@@ -129,7 +146,8 @@ int rayRender(int argc, char *argv[])
           &footprint_option,     &min_bound_option,      &max_bound_option,    &no_flat_top,
           &estimator_option,     &cells_option,          &cell_size_option,    &max_sin_zenith_option,
           &no_overlap,           &pool_radius_option,    &min_gap_option,      &return_range_option,
-          &self_shadow }))
+          &self_shadow,          &second_order,          &occlusion_radius_option, &ratio_bias,
+          &no_priors }))
   {
     usage();
   }
@@ -148,6 +166,11 @@ int rayRender(int argc, char *argv[])
                                                                    { "min_gap", min_gap_option.isSet() },
                                                                    { "no_overlap_correction", no_overlap.isSet() },
                                                                    { "self_shadow_correction", self_shadow.isSet() },
+                                                                   { "self_shadow_second_order", second_order.isSet() },
+                                                                   { "occlusion_radius",
+                                                                     occlusion_radius_option.isSet() },
+                                                                   { "ratio_bias_correction", ratio_bias.isSet() },
+                                                                   { "no_neighbour_priors", no_priors.isSet() },
                                                                    { "no_flat_top", no_flat_top.isSet() },
                                                                    { "return_range", return_range_option.isSet() } };
   const bool cylinders = density_model_option.isSet() && density_model.selectedKey() == "vertical_cylinder";
@@ -161,7 +184,8 @@ int rayRender(int argc, char *argv[])
     const bool cylinder_only = arg.first == "min_sin_zenith" || arg.first == "max_sin_zenith" ||
                                arg.first == "stem_diameter" || arg.first == "footprint" || arg.first == "min_gap" ||
                                arg.first == "no_overlap_correction" || arg.first == "return_range" ||
-                               arg.first == "self_shadow_correction";
+                               arg.first == "self_shadow_correction" || arg.first == "self_shadow_second_order" ||
+                               arg.first == "occlusion_radius";
     if (arg.second && cylinder_only && !cylinders)
     {
       std::cerr << "Error: --" << arg.first << " requires --density_model vertical_cylinder" << std::endl;
@@ -189,6 +213,23 @@ int rayRender(int argc, char *argv[])
     std::cerr << "Error: --self_shadow_correction requires --estimator pooled and --stem_diameter" << std::endl;
     usage();
   }
+  if (second_order.isSet() && !self_shadow.isSet())
+  {
+    std::cerr << "Error: --self_shadow_second_order requires --self_shadow_correction" << std::endl;
+    usage();
+  }
+  const bool pooled_estimator = estimator_option.isSet() && estimator.selectedKey() == "pooled";
+  if ((occlusion_radius_option.isSet() || ratio_bias.isSet() || no_priors.isSet()) && !pooled_estimator)
+  {
+    std::cerr << "Error: --occlusion_radius, --ratio_bias_correction and --no_neighbour_priors require --estimator "
+                 "pooled"
+              << std::endl;
+    usage();
+  }
+  density_options.self_shadow_second_order = second_order.isSet();
+  density_options.occlusion_radius = occlusion_radius_option.isSet() ? occlusion_radius.value() : -1.0;
+  density_options.ratio_bias_correction = ratio_bias.isSet();
+  density_options.pooled_neighbour_priors = !no_priors.isSet();
   density_options.min_gap_ratio = min_gap.value();
   if (pool_radius_option.isSet())
   {

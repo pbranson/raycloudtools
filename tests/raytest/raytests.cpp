@@ -1289,6 +1289,151 @@ TEST(Basic, RayDensitySelfShadow)
   EXPECT_LT(std::abs(cells[1].density() - truth), std::abs(cells[0].density() - truth));
 }
 
+/// The small-window configuration of the pooled estimator: single voxels with the second-order self-shadow factor, the
+/// occlusion response inverted over a larger neighbourhood, the finite-ray correction and no neighbour priors. Checks
+/// the factor, that inverting the occlusion response over the pooling neighbourhood itself is the coupled correction,
+/// that the configuration is near the truth with sparse rays (where the first-order correction with the neighbour
+/// priors reads low), and that tiles match a single run
+TEST(Basic, RayDensitySmallWindow)
+{
+  // the second-order factor: 1 + x to first order, about 1.27 for a 2.25 cm effective width in a 5 cm voxel
+  const double area = 0.05 * 0.05, exit = ray::meanExitDistance(0.05, 0.05);
+  const double small = ray::selfShadowFactor(10.0 * exit, 100.0 * area, 0.0225, 0.01, 0.0, false);
+  EXPECT_NEAR(small, 1.0 + exit * 0.0225 / (10.0 * area), 1e-3);
+  const double single = ray::selfShadowFactor(exit, area, 0.0225, 0.01, 0.0, false);
+  EXPECT_NEAR(single, 1.266, 0.005);
+  EXPECT_GT(ray::selfShadowFactor(exit, area, 0.0225, 0.01, 0.0, true), single);
+  EXPECT_GT(ray::selfShadowFactor(exit, area, 0.03, 0.01, 0.0, false), single);
+  EXPECT_LE(ray::selfShadowFactor(exit, area, 1.0, 0.01, 0.0, false), 5.0);
+  // the density term: 0.35 x tau, about +2.4% at 600 stems/m^2 (tau = N d_eff s = 0.32)
+  const double tau = 600.0 * 0.0225 * exit;
+  EXPECT_NEAR(ray::selfShadowFactor(exit, area, 0.0225, 0.01, tau, false) - single, 0.35 * 0.213 * tau, 1e-3);
+
+  ray::PneumatophoreParams scene;
+  scene.plot_width = 2.0;
+  scene.margin = 4.0;
+  scene.num_rays = 56250;  // a quarter of the standard ray density
+  scene.stems_per_m2 = 300.0;
+  scene.footprint.exit_diameter = 0.01;
+  scene.footprint.divergence = 0.003;
+  scene.footprint.threshold = 0.05;
+  ray::PneumatophoreGen gen;
+  gen.generate(scene, 12);
+  gen.cloud().save("small_window.ply");
+  const double half_plot = 0.5 * scene.plot_width;
+  double frontal_area = 0.0;
+  for (const auto &stem : gen.stems())
+  {
+    if (std::abs(stem[0]) < half_plot && std::abs(stem[1]) < half_plot)
+    {
+      frontal_area += scene.diameter * std::min(stem[2], 0.1);
+    }
+  }
+  const double truth = frontal_area / (scene.plot_width * scene.plot_width * 0.1);
+  const ray::Cuboid bounds(Eigen::Vector3d(-half_plot, -half_plot, 0.0), Eigen::Vector3d(half_plot, half_plot, 0.1));
+  const double voxel_width = 0.05;
+  const Eigen::Vector3i dims(40, 40, 2);
+  ray::CellLayout layout;
+  layout.min_bound = bounds.min_bound_;
+  layout.cell_size = Eigen::Vector3d(scene.plot_width, scene.plot_width, 0.1);
+  ray::DensityOptions base;
+  base.distribution = ray::ElementDistribution::VerticalCylinder;
+  base.path_estimator = ray::PathEstimator::PooledBeerLambert;
+  base.flat_top_compensation = false;
+  base.stem_diameter = scene.diameter;
+  base.footprint = scene.footprint;
+  auto cell = [&](const ray::DensityOptions &options) {
+    int shift = 0;
+    auto grid = ray::estimateDensityGrid("small_window.ply", bounds, voxel_width, dims, options, shift);
+    EXPECT_TRUE(grid != nullptr);
+    return grid ? ray::aggregateDensityCells(*grid, shift, Eigen::Vector3i(0, 0, 0), dims, layout)[0] :
+                  ray::DensityCell();
+  };
+  // inverting the occlusion response over the pooling neighbourhood itself is the default (coupled) correction
+  ray::DensityOptions coupled = base;
+  coupled.self_shadow_correction = true;
+  ray::DensityOptions same_radius = coupled;
+  same_radius.occlusion_radius = coupled.pool_radius;
+  const ray::DensityCell coupled_cell = cell(coupled), same_cell = cell(same_radius);
+  EXPECT_NEAR(same_cell.density(), coupled_cell.density(), 1e-5 * coupled_cell.density());
+  EXPECT_NEAR(same_cell.pooledDensity(), coupled_cell.pooledDensity(), 1e-5 * coupled_cell.pooledDensity());
+
+  ray::DensityOptions first_order = base;  // single voxels with the first-order correction (stage 1)
+  first_order.pool_radius = 0.0;
+  first_order.self_shadow_correction = true;
+  ray::DensityOptions small_window = first_order;
+  small_window.self_shadow_second_order = true;
+  small_window.occlusion_radius = 0.05;
+  small_window.ratio_bias_correction = true;
+  small_window.pooled_neighbour_priors = false;
+  ray::DensityOptions with_priors = small_window;
+  with_priors.pooled_neighbour_priors = true;
+  const ray::DensityCell first_cell = cell(first_order), small_cell = cell(small_window),
+                         priors_cell = cell(with_priors);
+  std::cout << "true N*d near ground: " << truth
+            << ", single voxels with the first-order correction: " << first_cell.density()
+            << ", small-window configuration: " << small_cell.density()
+            << " (with the neighbour priors: " << priors_cell.density() << "), pooled: " << small_cell.pooledDensity()
+            << std::endl;
+  EXPECT_NEAR(small_cell.density(), truth, 0.06 * truth);
+  EXPECT_LT(std::abs(small_cell.density() - truth), std::abs(first_cell.density() - truth));
+  // the path-weighted neighbour priors lower the mean of sparse single voxels
+  EXPECT_LT(priors_cell.density(), small_cell.density());
+  EXPECT_NEAR(small_cell.pooledDensity(), truth, 0.06 * truth);
+
+  // tiles match a single run, with a halo covering the occlusion neighbourhood
+  ray::DensityTileParams params;
+  params.origin = Eigen::Vector2d(-1.0, -1.0);
+  params.cell_size = Eigen::Vector3d(0.5, 0.5, 0.1);
+  params.max_height = 0.2;
+  params.options = small_window;
+  params.tile_width = 2.0;
+  EXPECT_TRUE(ray::estimateDensityTile("small_window.ply", params, "small_window_single.zarr"));
+  const std::vector<float> whole = readZarrChunk("small_window_single.zarr/density/0.0.0");
+  ASSERT_EQ(whole.size(), 32u);
+  params.tile_width = 1.0;
+  params.num_tiles = Eigen::Vector2i(2, 2);
+  const double halo = small_window.occlusion_radius + 2.0 * voxel_width;
+  params.halo = halo - 0.5 * voxel_width;
+  EXPECT_FALSE(ray::estimateDensityTile("small_window.ply", params, "small_window_small_halo.zarr"));
+  params.halo = -1.0;
+  EXPECT_TRUE(ray::splitTiles("small_window.ply", "small_window_tiles", params.origin, 1.0, halo, -1.0, 2.0,
+                              Eigen::Vector2i(2, 2)));
+  int compared = 0;
+  for (int i = 0; i < 2; i++)
+  {
+    for (int j = 0; j < 2; j++)
+    {
+      params.tile = Eigen::Vector2i(i, j);
+      std::stringstream name;
+      name << "small_window_tiles_" << i << "_" << j << ".ply";
+      EXPECT_TRUE(ray::estimateDensityTile(name.str(), params, "small_window_tiles.zarr"));
+      std::stringstream chunk;
+      chunk << "small_window_tiles.zarr/density/0." << j << "." << i;
+      const std::vector<float> tile = readZarrChunk(chunk.str());
+      ASSERT_EQ(tile.size(), 8u);
+      for (int z = 0; z < 2; z++)
+      {
+        for (int y = 0; y < 2; y++)
+        {
+          for (int x = 0; x < 2; x++)
+          {
+            const float a = tile[static_cast<size_t>(x + 2 * (y + 2 * z))];
+            const float b = whole[static_cast<size_t>((x + 2 * i) + 4 * ((y + 2 * j) + 4 * z))];
+            EXPECT_EQ(std::isnan(a), std::isnan(b));
+            if (!std::isnan(a) && !std::isnan(b))
+            {
+              EXPECT_NEAR(a, b, 1e-4 * std::max(1.0f, std::abs(b)));
+              compared++;
+            }
+          }
+        }
+      }
+    }
+  }
+  EXPECT_GT(compared, 24);
+}
+
 /// The Zarr store of a tile at georeferenced (e.g. UTM) coordinates: valid metadata, float32 data and float64
 /// coordinates that resolve the cell centres exactly, NaN for unobserved cells (here below the ground), the tile's
 /// description, and a second tile with different parameters is refused
