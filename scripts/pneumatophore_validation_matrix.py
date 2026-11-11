@@ -26,7 +26,11 @@ and layer, as mean +- standard error over the seeds:
   t_gen, t_est    run time (s) of the scene generation and of each estimate
 bins.csv gives density / truth in bins of observed fraction (pooled over seeds and cells), and line_distance.csv by
 distance of the cell centre from the nearest walk line (block A). Block X (run only when named) holds the diagnostic
-runs of the failures. Pass: |d/t90 - 1| <= 0.02 in 0-0.1 and 0.1-0.2 m for the pass-eligible configurations;
+runs of the failures. Block L (run only when named) is the footprint mismatch: scenes generated with a true beam
+footprint (default 10 mm, 3 mrad, 0.05; narrow 5 mm, 0.5 mrad; wide 20 mm, 5 mrad) and estimated assuming another
+(exit diameter and divergence x0.5-2, thresholds 0.02-0.15, joint errors that match d_eff at 2 m, an assumed
+diameter x threshold grid, and no footprint correction), each with the default estimator, the self-shadow correction
+and the small-window configuration (SW_EXTRA); analysed by scripts/pneumatophore_footprint_mismatch.py. Pass: |d/t90 - 1| <= 0.02 in 0-0.1 and 0.1-0.2 m for the pass-eligible configurations;
 --rerun_failures adds seeds to the failing ones. Examples:
   scripts/pneumatophore_validation_matrix.py --blocks A,B --out matrix --bin build/raycloudtools/raycreate,...
   scripts/pneumatophore_validation_matrix.py --blocks all --summary_only --out matrix
@@ -50,12 +54,57 @@ EXIT_DISTANCE_SQUARE = (4.0 * math.log(1.0 + math.sqrt(2.0)) - (4.0 / 3.0) * (ma
 SEEDS = "101,102,103,104"
 OBS_BINS = [0.0, 0.3, 0.5, 0.7, 0.8, 0.9, 1.0001]
 PASS_BLOCKS = set("ABCDEHIJ")
+# the small-window configuration of stage 2 (remedy d), with --pool_radius 0
+SW_EXTRA = ("--self_shadow_correction --self_shadow_second_order --occlusion_radius 0.05 --ratio_bias_correction "
+            "--no_neighbour_priors")
 PASS_TOLERANCE = 0.02
 LOW = [0.0, 0.1]
 
 
 def layers_to(top):
     return [round(0.1 * i, 1) for i in range(int(round(top / 0.1)))]
+
+
+def strip_intercept_fraction(width, beam_diameter, offset):
+    """as ray::stripInterceptFraction: the fraction of a Gaussian beam (1/e^2 diameter) intercepted by a strip"""
+    if beam_diameter <= 0.0:
+        return 1.0 if abs(offset) < 0.5 * width else 0.0
+    scale = 1.0 / (math.sqrt(2.0) * 0.25 * beam_diameter)
+    return 0.5 * (math.erf((offset + 0.5 * width) * scale) - math.erf((offset - 0.5 * width) * scale))
+
+
+def effective_width(diameter, beam_diameter, threshold):
+    """as ray::effectiveStemWidth: the width of the band of beam offsets whose intercepted fraction >= threshold"""
+    if beam_diameter <= 0.0:
+        return diameter if threshold <= 1.0 else 0.0
+    if strip_intercept_fraction(diameter, beam_diameter, 0.0) < threshold:
+        return 0.0
+    low, high = 0.0, 0.5 * diameter + 4.0 * beam_diameter
+    for _ in range(60):
+        mid = 0.5 * (low + high)
+        if strip_intercept_fraction(diameter, beam_diameter, mid) >= threshold:
+            low = mid
+        else:
+            high = mid
+    return 2.0 * low
+
+
+def matching_threshold(diameter, beam_diameter, target_width):
+    """the threshold for which a beam of this diameter gives the effective width @c target_width (None if none)"""
+    lo, hi = 1e-6, strip_intercept_fraction(diameter, beam_diameter, 0.0)
+    if effective_width(diameter, beam_diameter, lo) < target_width or hi <= lo:
+        return None
+    for _ in range(80):
+        mid = 0.5 * (lo + hi)
+        if effective_width(diameter, beam_diameter, mid) >= target_width:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
+def fp_text(exit_diameter, divergence, threshold):
+    return f"{round(exit_diameter, 6):g},{round(divergence, 7):g},{round(threshold, 6):g}"
 
 
 def render(diameter=0.01, voxel=0.05, pool=0.05, footprint=FOOTPRINT, extra=""):
@@ -78,7 +127,7 @@ def scene(stems=300, extra="", footprint=FOOTPRINT):
 
 class Config:
     def __init__(self, block, label, scene_args, variants, layers=LOW, plot_width=4.0, eval_half=None,
-                 line_bins=False, pass_eligible=None, note=""):
+                 line_bins=False, pass_eligible=None, note="", meta=None):
         self.block = block
         self.label = label
         self.scene_args = scene_args
@@ -89,6 +138,7 @@ class Config:
         self.line_bins = line_bins  # also summarise by distance of the cell centre from the nearest walk line
         self.pass_eligible = (block in PASS_BLOCKS) if pass_eligible is None else pass_eligible
         self.note = note
+        self.meta = meta or {}  # per variant name: what the variant assumes (block L: footprint and diameter)
 
     def ident(self):
         text = json.dumps([self.scene_args, self.variants, self.layers, self.plot_width, self.eval_half])
@@ -200,6 +250,7 @@ def build_configs():
             v += pair(f"v{voxel} p{pool}", voxel=voxel, pool=pool, extra=e)
         c.append(Config("J", f"[{cfg.block}] {cfg.label}", cfg.scene_args, v, layers=cfg.layers,
                         plot_width=cfg.plot_width, eval_half=cfg.eval_half))
+    c += footprint_mismatch_configs()
     # ---- X. diagnostics of the failures (not part of "all"): the errors that appear in 0.1-0.2 m, where stems of
     # the default heights end, repeated with stems of one height (0.6 m, no tops below 0.6 m)
     fixed = "--height 0.6,0"
@@ -231,6 +282,82 @@ def build_configs():
     # no beam footprint: the stem tops' contribution without the footprint's widening of the top discs
     c.append(Config("X", "no footprint, heights normal 0.25, 300/m2", scene(300, footprint=""), pair(footprint=""),
                     layers=layers_to(0.5), pass_eligible=False))
+    return c
+
+# ---- L. footprint mismatch: scenes generated with a true beam footprint, estimated assuming another one
+L_TRUE = (("default", 0.01, 0.003, 0.05), ("narrow", 0.005, 0.0005, 0.05), ("wide", 0.02, 0.005, 0.05))
+L_RATIOS = (0.5, 0.75, 1.25, 1.5, 2.0)
+L_THRESHOLDS = (0.02, 0.03, 0.08, 0.10, 0.15)
+L_GRID_DIAMETERS = (0.8, 0.9, 1.1, 1.2)
+L_GRID_THRESHOLDS = (0.02, 0.03, 0.05, 0.08, 0.10, 0.15)
+L_MATCH_RANGE = 2.0  # the joint cases match d_eff (or the beam diameter) at this range, not at 1 or 4 m
+
+
+def footprint_estimators(fp, diameter=0.01, extra=""):
+    """the three estimators (default window, self-shadow correction, small window) with an assumed footprint"""
+    base = render(diameter=diameter, footprint=fp, extra=extra)
+    sw = render(diameter=diameter, footprint=fp, pool=0, extra=(extra + " " + SW_EXTRA).strip())
+    return [("base", base), ("ss", base + " --self_shadow_correction"), ("sw", sw)]
+
+
+def assumed_footprints(w0, g, t, d=0.01):
+    """(tag, kind, level, exit diameter, divergence, threshold) of the assumed footprints for a true one"""
+    out = [("true", "true", 1.0, w0, g, t)]
+    out += [(f"e{r:g}", "exit", r, w0 * r, g, t) for r in L_RATIOS]
+    out += [(f"g{r:g}", "divergence", r, w0, g * r, t) for r in L_RATIOS]
+    out += [(f"t{x:g}", "threshold", x / t, w0, g, x) for x in L_THRESHOLDS]
+    beam = w0 + g * L_MATCH_RANGE
+    # the same beam diameter at 2 m: twice the divergence (narrower exit), or no divergence (wider exit)
+    out.append(("j_steep", "joint", 1.0, w0 - g * L_MATCH_RANGE if w0 > g * L_MATCH_RANGE else 0.5 * w0,
+                2.0 * g if w0 > g * L_MATCH_RANGE else (beam - 0.5 * w0) / L_MATCH_RANGE, t))
+    out.append(("j_flat", "joint", 1.0, beam, 0.0, t))
+    # the same d_eff at 2 m from another exit diameter and the threshold that compensates for it
+    target = effective_width(d, beam, t)
+    for r in (0.5, 1.5, 2.0):
+        tm = matching_threshold(d, w0 * r + g * L_MATCH_RANGE, target)
+        if tm is not None:
+            out.append((f"jt_e{r:g}", "joint", r, w0 * r, g, tm))
+    return out
+
+
+def footprint_mismatch_configs():
+    c = []
+    for name, w0, g, t in L_TRUE:
+        true_fp = fp_text(w0, g, t)
+        for n in (300, 1000):
+            variants, meta = [], {}
+            for tag, kind, level, aw0, ag, at in assumed_footprints(w0, g, t):
+                for est, args in footprint_estimators(fp_text(aw0, ag, at)):
+                    variants.append((f"{tag} {est}", args))
+                    meta[f"{tag} {est}"] = dict(tag=tag, kind=kind, level=level, exit=aw0, divergence=ag,
+                                                threshold=at, diameter=0.01, est=est)
+            for est, args in footprint_estimators(""):
+                variants.append((f"nofp {est}", args))
+                meta[f"nofp {est}"] = dict(tag="nofp", kind="none", level=0.0, exit=0.0, divergence=0.0,
+                                           threshold=0.0, diameter=0.01, est=est)
+            if name == "default":
+                # assumed diameter x assumed threshold
+                for dr in L_GRID_DIAMETERS:
+                    for x in L_GRID_THRESHOLDS:
+                        tag = f"d{dr:g} t{x:g}"
+                        for est, args in footprint_estimators(fp_text(w0, g, x), diameter=round(0.01 * dr, 6)):
+                            variants.append((f"{tag} {est}", args))
+                            meta[f"{tag} {est}"] = dict(tag=tag, kind="grid", level=dr, exit=w0, divergence=g,
+                                                        threshold=x, diameter=0.01 * dr, est=est)
+            c.append(Config("L", f"true {name} {true_fp}, {n}/m2", scene(n, footprint=true_fp), variants,
+                            pass_eligible=False, meta=meta,
+                            note=f"true footprint {true_fp}; variants '<assumed> <estimator>'"))
+    # range: one walk line along the middle of an 8 m plot, cells binned by distance from the line
+    w0, g, t = L_TRUE[0][1:]
+    variants, meta = [], {}
+    for tag, kind, level, aw0, ag, at in assumed_footprints(w0, g, t):
+        for est, args in footprint_estimators(fp_text(aw0, ag, at)):
+            variants.append((f"{tag} {est}", args))
+            meta[f"{tag} {est}"] = dict(tag=tag, kind=kind, level=level, exit=aw0, divergence=ag, threshold=at,
+                                        diameter=0.01, est=est)
+    c.append(Config("L", f"single line, 8 m plot, true default {fp_text(w0, g, t)}, 300/m2",
+                    scene(300, "--walk_spacing 8", footprint=fp_text(w0, g, t)), variants, plot_width=8.0,
+                    line_bins=True, pass_eligible=False, meta=meta))
     return c
 
 
@@ -287,7 +414,7 @@ def run_job(job):
             text = open(rlog).read()
             m = re.search(r"mean effective width / diameter of ([0-9.e+-]+)", text)
             rho = float(m.group(1)) if m else 1.0
-            m = re.search(r"self-shadow correction: mean factor ([0-9.e+-]+)", text)
+            m = re.search(r"self-shadow correction(?: \(second order\))?: mean factor ([0-9.e+-]+)", text)
             ss = float(m.group(1)) if m else float("nan")
             voxel = float(re.search(r"--pixel_width ([0-9.]+)", render_args).group(1))
             pool = float(re.search(r"--pool_radius ([0-9.]+)", render_args).group(1))
@@ -308,7 +435,8 @@ def run_job(job):
                                         float(row["density_frontal_area_per_volume_Nd"]),
                                         float(row["pooled_density_frontal_area_per_volume_Nd"]),
                                         0.0 if math.isnan(obs) else obs,
-                                        min(abs(cy - y) for y in lines_y)])
+                                        min(abs(cy - y) for y in lines_y),
+                                        float(row["weighted_path"])])
     except subprocess.CalledProcessError as e:
         result["error"] = str(e) + "\n" + open(os.path.join(work, "log.txt")).read()[-2000:]
     finally:
@@ -486,7 +614,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     configs = build_configs()
     parser.add_argument("--blocks", default="all",
-                        help="comma separated block letters (A-J, and X for the diagnostics), or all (A-J)")
+                        help="comma separated block letters (A-J, L for the footprint mismatch and X for the "
+                        "diagnostics), or all (A-J)")
     parser.add_argument("--configs", default="", help="only configurations whose label matches this regex")
     parser.add_argument("--seeds", default=SEEDS)
     parser.add_argument("--rays_per_m", type=float, default=56250.0)
@@ -504,7 +633,7 @@ def main():
     if args.bin:
         os.environ["PATH"] = os.pathsep.join(os.path.abspath(b) for b in args.bin.split(",")) + os.pathsep + \
             os.environ["PATH"]
-    blocks = set("ABCDEFGHIJ") if args.blocks == "all" else set(args.blocks.split(","))  # X only on request
+    blocks = set("ABCDEFGHIJ") if args.blocks == "all" else set(args.blocks.split(","))  # L, X only on request
     selected = [c for c in configs if c.block in blocks and (not args.configs or re.search(args.configs, c.label))]
     if args.list:
         for c in selected:
