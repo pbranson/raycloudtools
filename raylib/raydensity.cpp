@@ -379,7 +379,13 @@ bool estimateDensityTile(const std::string &cloud_file, const DensityTileParams 
     attrs << ",\n  \"occlusion_radius\": " << params.options.occlusion_radius;
   }
   attrs << (params.options.ratio_bias_correction ? ",\n  \"ratio_bias_correction\": true" : "")
-        << (params.options.pooled_neighbour_priors ? "" : ",\n  \"neighbour_priors\": false");
+        << (params.options.pooled_neighbour_priors ? "" : ",\n  \"neighbour_priors\": false")
+        << (params.options.hybrid ? ",\n  \"hybrid\": true" : "");
+  // the mask is recorded only when set, so stores written without it are unchanged
+  if (params.min_observed_fraction > 0.0)
+  {
+    attrs << ",\n  \"min_observed_fraction\": " << params.min_observed_fraction;
+  }
   const std::string group_attrs = "{\n" + attrs.str() + "\n}\n";
   std::string existing;
   if (store.readText(".zattrs", existing) && existing != group_attrs)
@@ -414,6 +420,14 @@ bool estimateDensityTile(const std::string &cloud_file, const DensityTileParams 
   {
     outputs.push_back(
       { "solid_fraction", "N pi d^2 / 4 for N d = density, the fraction of the ground area occupied by stems", {} });
+  }
+  const size_t hybrid_output = outputs.size();
+  if (params.options.hybrid)
+  {
+    outputs.push_back({ "hybrid_weight",
+                        "mean weight of the single-voxel estimate in the hybrid density over the observed voxels (0: "
+                        "pool radius estimate, 1: single-voxel estimate)",
+                        {} });
   }
   // coordinates in float64, as float32 can't resolve cells or voxels at georeferenced (e.g. UTM) coordinates
   std::vector<double> xs(static_cast<size_t>(shape_x)), ys(static_cast<size_t>(shape_y)),
@@ -589,11 +603,16 @@ bool estimateDensityTile(const std::string &cloud_file, const DensityTileParams 
   }
   for (size_t c = 0; c < cells.size(); c++)
   {
-    const DensityCell &cell = cells[c];
+    DensityCell &cell = cells[c];
+    cell.mask(params.min_observed_fraction);
     outputs[5].data[c] = static_cast<float>(cell.observedFraction());
     if (cell.observed == 0)
     {
       continue;
+    }
+    if (params.options.hybrid)
+    {
+      outputs[hybrid_output].data[c] = static_cast<float>(cell.hybridWeight());
     }
     outputs[0].data[c] = static_cast<float>(cell.density());
     outputs[1].data[c] = static_cast<float>(cell.pooledDensity());

@@ -127,6 +127,22 @@ struct RAYLIB_EXPORT DensityOptions
   /// dense voxels, and with small pooling neighbourhoods (pool_radius 0) it biases the density low where rays are
   /// sparse: by 8% at 300 stems/m^2 near the ground with a quarter of the standard rays
   bool pooled_neighbour_priors = true;
+  /// For the pooled estimator with self_shadow_correction and a stem_diameter: the hybrid estimate (experimental, off
+  /// by default). The same rays are also estimated, in the same pass, with single-voxel neighbourhoods (pool_radius
+  /// 0, the second-order self-shadow factor, the occlusion response inverted over the pool_radius neighbourhood, the
+  /// finite-ray correction and no neighbour priors). That resolves clustered stems (patches, cable roots), which the
+  /// pool_radius neighbourhoods blur, but leaves the voxels of at most DensityGrid::min_voxel_hits rays unobserved,
+  /// and these are mostly in the denser places, so it reads low where rays are sparse. Each cell (of
+  /// aggregateDensityCells) whose fraction of voxels observed by the single-voxel estimate is at least
+  /// hybrid_min_observed takes the single-voxel density, with its unobserved voxels taking the pool_radius density;
+  /// other cells take the pool_radius density. The choice depends only on the ray counts (observation), not on the
+  /// hits (content), and is per cell, not per voxel: a voxel's ray count is a strong proxy of its neighbourhood's
+  /// density (the stems shadow their neighbours), so a per-voxel weight on it biases the cell low. The other
+  /// outputs (pooled density, hits, observed fraction) are those of the pool_radius estimate
+  bool hybrid = false;
+  /// With hybrid: the minimum fraction of a cell's voxels that the single-voxel estimate must observe for the cell to
+  /// take it
+  double hybrid_min_observed = 0.9;
   /// Model the top of the cloud as a sharp boundary between air and a uniform medium (e.g. a grass or crop
   /// canopy), so the air above the highest point in each column is excluded. Not suited to elements of varying
   /// height such as pneumatophores, where it biases the upper layers.
@@ -268,6 +284,29 @@ struct RAYLIB_EXPORT DensityGrid
   {
     return index < uncorrected_scale_.size() ? static_cast<double>(uncorrected_scale_[index]) : 1.0;
   }
+  /// Stop accumulating the ray moments of enableRatioBiasCorrection (and discard them)
+  inline void disableRatioBiasCorrection()
+  {
+    path_squares_.clear();
+    hit_paths_.clear();
+  }
+  /// Combine this grid's voxel densities (the pool_radius estimate) with those of @c small, the same rays with
+  /// single-voxel neighbourhoods (see DensityOptions::hybrid), after both have had applyOverlapCorrection and
+  /// addNeighbourPriors. Each observed voxel's hybrid density (voxelDensity(index)) is the single-voxel density
+  /// where @c small observes it, and this grid's density otherwise. aggregateDensityCells chooses per cell between
+  /// these and this grid's densities, by the fraction @c min_observed of the cell's voxels that @c small observes
+  void combineHybrid(const DensityGrid &small, double min_observed);
+  /// Whether combineHybrid has been called
+  inline bool hybrid() const { return !hybrid_weight_.empty(); }
+  /// With the hybrid: the minimum fraction of a cell's voxels observed by the single-voxel estimate for the cell to
+  /// take it (DensityOptions::hybrid_min_observed)
+  inline double hybridMinObserved() const { return hybrid_min_observed_; }
+  /// Whether the single-voxel estimate of the hybrid observes the voxel at @c index of voxels() (false without the
+  /// hybrid)
+  inline bool smallObserved(size_t index) const
+  {
+    return index < hybrid_weight_.size() && hybrid_weight_[index] > 0.0f;
+  }
   /// Accumulate the effective width ratio of each ray segment, for applyOverlapCorrection. Requires the stem diameter
   void enableOverlapCorrection();
   /// Pool the voxel densities over neighbourhoods (PooledBeerLambert), and correct them for the space occupied by the
@@ -279,6 +318,10 @@ struct RAYLIB_EXPORT DensityGrid
   /// the pooled neighbourhood ratio of hits to path length, without the small-sample factor (n-1)/n for the voxel's
   /// own number of rays n.
   inline double voxelDensity(const Voxel &voxel) const;
+  /// The density of the voxel at @c index of voxels(): voxelDensity(voxels()[index]), or after combineHybrid, the
+  /// single-voxel density where that estimate observes the voxel (the rendered image uses this; the cells choose per
+  /// cell, see DensityOptions::hybrid)
+  inline double voxelDensity(size_t index) const;
   /// Correct for the beam footprint widening thin vertical stems, using their (mean) true diameter.
   /// Only applies to the VerticalCylinder distribution
   inline void setFootprint(const BeamFootprint &footprint, double stem_diameter)
@@ -340,6 +383,9 @@ private:
   std::vector<float> path_squares_;  // per voxel, sum over segments of (G rho L)^2, for the ratio bias correction
   std::vector<float> hit_paths_;     // per voxel, sum over the hit segments of G rho L, for the ratio bias correction
   std::vector<float> uncorrected_scale_;  // per voxel, uncorrected / corrected hits, with the self-shadow correction
+  std::vector<float> small_density_;      // per voxel, the single-voxel density of the hybrid (0 where unobserved)
+  std::vector<float> hybrid_weight_;      // per voxel, 1 where the single-voxel estimate observes it, otherwise 0
+  double hybrid_min_observed_ = 0.9;
   static constexpr double max_solid_fraction_ = 0.4;
   Eigen::Vector3i hit_voxel_;  // voxel of the end point of the ray currently being walked
   double hit_length_ = 0.0;    // length (in voxels) to the end point of the ray currently being walked
@@ -387,6 +433,16 @@ double DensityGrid::voxelDensity(const Voxel &voxel) const
     return 0.0;
   }
   return voxel.numHits() / (1e-10 + voxel.pathLength());
+}
+double DensityGrid::voxelDensity(size_t index) const
+{
+  const double density = voxelDensity(voxels_[index]);
+  if (index >= hybrid_weight_.size() || voxels_[index].numRays() <= min_voxel_hits)
+  {
+    return density;
+  }
+  const double w = static_cast<double>(hybrid_weight_[index]);
+  return w * static_cast<double>(small_density_[index]) + (1.0 - w) * density;
 }
 DensityGrid::Voxel DensityGrid::Voxel::operator*(float scale) const
 {
@@ -510,15 +566,29 @@ struct RAYLIB_EXPORT DensityCell
   double weighted_path = 0.0;
   /// Sum of the voxel densities (voxelAverageDensity)
   double density_sum = 0.0;
+  /// With the hybrid estimate: the number of observed voxels that take the single-voxel density (0 when the cell
+  /// takes the pool_radius density)
+  double hybrid_weight_sum = 0.0;
   int observed = 0;  // number of observed voxels
   int total = 0;     // number of voxels in the cell
+  /// Whether the cell is masked for its low observed fraction (see mask): its density, pooled density and patchiness
+  /// ratio are then NaN, while the sums and the observed fraction are kept
+  bool masked = false;
+  /// Masks the cell if its observed fraction is below @c min_observed_fraction (0 masks none). Cells where only part
+  /// of the voxels are observed are a selection of the less occluded places, and read low (by 5% at observed
+  /// fractions of 0.5-0.9 and 10-17% below 0.5, with the self-shadow correction)
+  inline void mask(double min_observed_fraction)
+  {
+    masked = min_observed_fraction > 0.0 && !(observedFraction() >= min_observed_fraction);
+  }
   /// The cell's density: the mean of its observed voxel densities (each voxel weighted equally, so by volume). NaN
   /// when no voxel is observed. This is the main output: it represents patchy cells correctly, but each stem's shadow
   /// within its own neighbourhood biases it high, by about 0.47 d_eff / W for neighbourhoods of width W, unless
   /// DensityOptions::self_shadow_correction is set
   inline double density() const
   {
-    return observed > 0 ? density_sum / static_cast<double>(observed) : std::numeric_limits<double>::quiet_NaN();
+    return observed > 0 && !masked ? density_sum / static_cast<double>(observed) :
+                                     std::numeric_limits<double>::quiet_NaN();
   }
   /// The cell's density pooled over its observed voxels: hits / weighted_path. This is the weighted_path-weighted
   /// mean of the (neighbourhood-pooled and corrected) voxel densities. It is accurate for uniform stems, but much
@@ -526,7 +596,8 @@ struct RAYLIB_EXPORT DensityCell
   /// weight. NaN when no voxel is observed
   inline double pooledDensity() const
   {
-    return observed > 0 && weighted_path > 0.0 ? hits / weighted_path : std::numeric_limits<double>::quiet_NaN();
+    return observed > 0 && weighted_path > 0.0 && !masked ? hits / weighted_path :
+                                                            std::numeric_limits<double>::quiet_NaN();
   }
   /// density / pooledDensity, which exceeds 1 where the density varies within the cell (about 2 for 0.3 m patches
   /// in 1 m cells). NaN when either is NaN, or the pooled density is 0
@@ -539,6 +610,13 @@ struct RAYLIB_EXPORT DensityCell
   inline double meanHitsPerVoxel() const
   {
     return observed > 0 ? hits / static_cast<double>(observed) : std::numeric_limits<double>::quiet_NaN();
+  }
+  /// With the hybrid estimate (DensityOptions::hybrid): the fraction of the observed voxels whose density is the
+  /// single-voxel estimate. 0 where the cell takes the pool_radius estimate, and otherwise at least
+  /// hybrid_min_observed. NaN when no voxel is observed
+  inline double hybridWeight() const
+  {
+    return observed > 0 ? hybrid_weight_sum / static_cast<double>(observed) : std::numeric_limits<double>::quiet_NaN();
   }
   /// The fraction of the cell's voxels that are observed. NaN for a cell without voxels
   inline double observedFraction() const

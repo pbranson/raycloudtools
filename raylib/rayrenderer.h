@@ -45,6 +45,9 @@ struct RAYLIB_EXPORT DensityOutputs
   /// models), tiling from the minimum bound (see aggregateDensityCells)
   std::string cells_file;
   Eigen::Vector3d cell_size = Eigen::Vector3d(1.0, 1.0, 0.1);
+  /// The cells (and layers of the profile) whose observed fraction is below this have nan density, pooled density
+  /// and patchiness ratio (see DensityCell::mask). The observed fraction is always written. 0 (the default) masks none
+  double min_observed_fraction = 0.0;
 };
 
 /// Render a ray cloud according to the supplied parameters

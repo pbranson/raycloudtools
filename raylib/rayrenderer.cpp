@@ -459,7 +459,7 @@ std::string densityLabel(const DensityGrid &grid)
 /// fraction of the cell's voxels that were observed. Values that are undefined for a cell (e.g. without observed
 /// voxels) are nan. @c dims are the (shifted) voxels to aggregate, and @c shift that of estimateDensityGrid
 bool writeDensityCells(const std::string &file_name, const DensityGrid &grid, const Eigen::Vector3i &dims, int shift,
-                       const Eigen::Vector3d &min_bound, const Eigen::Vector3d &cell_size)
+                       const Eigen::Vector3d &min_bound, const Eigen::Vector3d &cell_size, double min_observed_fraction)
 {
   std::ofstream ofs(file_name.c_str(), std::ios::out);
   if (!ofs.is_open())
@@ -475,10 +475,14 @@ bool writeDensityCells(const std::string &file_name, const DensityGrid &grid, co
     layout.num_cells[i] =
       std::max(1, static_cast<int>(std::ceil(static_cast<double>(dims[i]) * grid.voxelWidth() / cell_size[i] - 1e-6)));
   }
-  const std::vector<DensityCell> cells = aggregateDensityCells(grid, shift, Eigen::Vector3i(0, 0, 0), dims, layout);
+  std::vector<DensityCell> cells = aggregateDensityCells(grid, shift, Eigen::Vector3i(0, 0, 0), dims, layout);
+  for (DensityCell &cell : cells)
+  {
+    cell.mask(min_observed_fraction);
+  }
   const std::string label = densityLabel(grid);
   ofs << "x_min,y_min,z_min,x_max,y_max,z_max,observed_fraction,hits,weighted_path,density_" << label
-      << ",pooled_density_" << label << ",patchiness_ratio" << std::endl;
+      << ",pooled_density_" << label << ",patchiness_ratio" << (grid.hybrid() ? ",hybrid_weight" : "") << std::endl;
   for (int z = 0; z < layout.num_cells[2]; z++)
   {
     for (int y = 0; y < layout.num_cells[1]; y++)
@@ -495,7 +499,12 @@ bool writeDensityCells(const std::string &file_name, const DensityGrid &grid, co
             << "," << cell_max[2] << "," << csvValue(cell.observedFraction()) << ","
             << csvValue(observed ? cell.hits : nan) << "," << csvValue(observed ? cell.weighted_path : nan) << ","
             << csvValue(cell.density()) << "," << csvValue(cell.pooledDensity()) << ","
-            << csvValue(cell.patchinessRatio()) << std::endl;
+            << csvValue(cell.patchinessRatio());
+        if (grid.hybrid())
+        {
+          ofs << "," << csvValue(cell.hybridWeight());
+        }
+        ofs << std::endl;
       }
     }
   }
@@ -511,7 +520,7 @@ bool writeDensityCells(const std::string &file_name, const DensityGrid &grid, co
 /// voxels with sufficient rays are included, so unobserved space (e.g. below the ground) is excluded.
 /// @c dims are the (shifted) voxels to aggregate, where voxel z spans heights min_bound[2] + voxel width * [z, z+1]
 bool writeDensityProfile(const std::string &file_name, const DensityGrid &grid, const Eigen::Vector3i &dims, int shift,
-                         const Eigen::Vector3d &min_bound)
+                         const Eigen::Vector3d &min_bound, double min_observed_fraction)
 {
   std::ofstream ofs(file_name.c_str(), std::ios::out);
   if (!ofs.is_open())
@@ -524,17 +533,26 @@ bool writeDensityProfile(const std::string &file_name, const DensityGrid &grid, 
   layout.min_bound = min_bound;
   layout.cell_size = Eigen::Vector3d(dims[0] * w, dims[1] * w, w);
   layout.num_cells = Eigen::Vector3i(1, 1, dims[2]);
-  const std::vector<DensityCell> layers = aggregateDensityCells(grid, shift, Eigen::Vector3i(0, 0, 0), dims, layout);
+  std::vector<DensityCell> layers = aggregateDensityCells(grid, shift, Eigen::Vector3i(0, 0, 0), dims, layout);
+  for (DensityCell &layer : layers)
+  {
+    layer.mask(min_observed_fraction);
+  }
   const std::string label = densityLabel(grid);
   ofs << "z_min,z_max,observed_voxels,total_voxels,mean_hits_per_voxel,density_" << label << ",pooled_density_" << label
-      << ",patchiness_ratio" << std::endl;
+      << ",patchiness_ratio" << (grid.hybrid() ? ",hybrid_weight" : "") << std::endl;
   for (int z = 0; z < dims[2]; z++)
   {
     const DensityCell &layer = layers[static_cast<size_t>(z)];
     const double z_min = min_bound[2] + w * static_cast<double>(z);
     ofs << z_min << "," << z_min + w << "," << layer.observed << "," << layer.total << ","
         << csvValue(layer.meanHitsPerVoxel()) << "," << csvValue(layer.density()) << ","
-        << csvValue(layer.pooledDensity()) << "," << csvValue(layer.patchinessRatio()) << std::endl;
+        << csvValue(layer.pooledDensity()) << "," << csvValue(layer.patchinessRatio());
+    if (grid.hybrid())
+    {
+      ofs << "," << csvValue(layer.hybridWeight());
+    }
+    ofs << std::endl;
   }
   std::cout << "density profile written to " << file_name << std::endl;
   return true;
@@ -598,7 +616,8 @@ bool renderCloud(const std::string &cloud_file, const Cuboid &bounds, ViewDirect
       }
       if (!density_outputs.profile_file.empty())
       {
-        if (!writeDensityProfile(density_outputs.profile_file, grid, output_dims, shift, bounds.min_bound_))
+        if (!writeDensityProfile(density_outputs.profile_file, grid, output_dims, shift, bounds.min_bound_,
+                                 density_outputs.min_observed_fraction))
         {
           return false;
         }
@@ -606,7 +625,7 @@ bool renderCloud(const std::string &cloud_file, const Cuboid &bounds, ViewDirect
       if (!density_outputs.cells_file.empty())
       {
         if (!writeDensityCells(density_outputs.cells_file, grid, output_dims, shift, bounds.min_bound_,
-                               density_outputs.cell_size))
+                               density_outputs.cell_size, density_outputs.min_observed_fraction))
         {
           return false;
         }
@@ -627,7 +646,7 @@ bool renderCloud(const std::string &cloud_file, const Cuboid &bounds, ViewDirect
             ind[axis] = z;
             ind[ax1] = x;
             ind[ax2] = y;
-            double d = grid.voxelDensity(grid.voxels()[grid.getIndex(ind)]);
+            double d = grid.voxelDensity(static_cast<size_t>(grid.getIndex(ind)));
 #if defined FLAT_TOP_COMPENSATION
             if (z == top_z - shift)
             {

@@ -22,6 +22,11 @@ The small-window sets: K (voxel x pool radius, with and without the first-order 
 the standard ray density), K2 (the same scenes for the small-window configuration SMALL_WINDOW and its ablations),
 K3 (stem diameter and footprint) and K4 (assumed diameter +-20%), e.g.
   scripts/pneumatophore_self_shadow_study.py --sets K2,K3,K4 --seeds 101,102,103,104 --jobs 2 --out small_window
+The hybrid sets (--hybrid: the small-window configuration per cell where it observes at least 0.9 of the cell's
+voxels, otherwise the default window with the first-order correction) compare default, ss, sw and hybrid: H (the
+block K scenes at 1/4, 1/2 and 1 of the standard rays), H2 (stem diameter and footprint) and H3 (stems of one height,
+0.6 m), e.g.
+  scripts/pneumatophore_self_shadow_study.py --sets H,H2,H3 --seeds 101,102,103,104 --jobs 2 --out hybrid
 """
 import argparse
 import csv
@@ -70,6 +75,14 @@ def small_window_variants(footprint=FOOTPRINT, diameter=0.01, short=False):
               ("sw priors", single + " " + SMALL_WINDOW.replace(" --no_neighbour_priors", "")),
               ("sw v0.025p0.025", render_args(footprint, diameter, 0.025, 0.025) + " " + SMALL_WINDOW)]
     return v
+
+
+def hybrid_variants(footprint=FOOTPRINT, diameter=0.01):
+    """the default estimator, the first-order correction (ss), the small-window configuration (sw) and the hybrid"""
+    default = render_args(footprint, diameter, 0.05, 0.05)
+    single = render_args(footprint, diameter, 0.05, 0.0)
+    return [("default", default), ("ss", default + " --self_shadow_correction"), ("sw", single + " " + SMALL_WINDOW),
+            ("hybrid", default + " --self_shadow_correction --hybrid")]
 
 
 def scene(stems, footprint=FOOTPRINT, extra=""):
@@ -182,6 +195,14 @@ def build_cases():
     k5 += [("overlapping 300/m2", scene(300, extra="--overlapping"))]
     cases["K5"] = [(f"{label}, rays x{scale}", args, small_window_variants(short=True), [0.0, 0.1, 0.2, 0.3], 0.01,
                     scale) for label, args in k5 for scale in (0.25, 1.0)]
+    # the hybrid against its parts, on the block K scenes, the K3 diameters and footprints, and the K5 stems of one
+    # height
+    cases["H"] = [(f"{label}, rays x{scale}", args, hybrid_variants(), LOW, 0.01, scale)
+                  for label, args in k_scenes for scale in (0.25, 0.5, 1.0)]
+    cases["H2"] = [(f"{label}, rays x{scale}", args, hybrid_variants(footprint=fp, diameter=d), LOW, d, scale)
+                   for label, args, d, fp in k3 for scale in (0.25, 1.0)]
+    cases["H3"] = [(f"{label}, rays x{scale}", args, hybrid_variants(), [0.0, 0.1, 0.2, 0.3], 0.01, scale)
+                   for label, args in k5[:3] for scale in (0.25, 1.0)]
     # assumed diameter error of +-20% (true 1 cm), render only
     cases["K4"] = []
     for n in (300, 1000):
