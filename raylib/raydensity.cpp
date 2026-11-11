@@ -251,6 +251,34 @@ const char *estimatorName(PathEstimator estimator)
   return "unknown";
 }
 
+/// Whether @c file_name is a .ply file whose header declares no vertices (a ray cloud without rays)
+bool isEmptyRayCloud(const std::string &file_name)
+{
+  std::ifstream ifs(file_name, std::ios::binary | std::ios::in);
+  std::string line;
+  if (!ifs.is_open() || !std::getline(ifs, line) || line.rfind("ply", 0) != 0)
+  {
+    return false;
+  }
+  bool empty = false;
+  while (std::getline(ifs, line))
+  {
+    std::stringstream ss(line);
+    std::string word, element;
+    long long count = -1;
+    ss >> word;
+    if (word == "end_header")
+    {
+      return empty;
+    }
+    if (word == "element" && ss >> element >> count && element == "vertex")
+    {
+      empty = count == 0;
+    }
+  }
+  return false;
+}
+
 /// Removes the triangles whose horizontal bounds don't overlap the box [box_min, box_max] in x and y, so that
 /// Mesh::toHeightField only bins the triangles near the tile, rather than those of the whole domain
 void cropMesh(Mesh &mesh, const Eigen::Vector2d &box_min, const Eigen::Vector2d &box_max)
@@ -483,20 +511,6 @@ bool estimateDensityTile(const std::string &cloud_file, const DensityTileParams 
 
   const Cuboid bounds(Eigen::Vector3d(grid_min[0], grid_min[1], z0),
                       Eigen::Vector3d(grid_min[0] + nx * w, grid_min[1] + nx * w, z0 + nz * w));
-  int shift = 0;
-  std::unique_ptr<DensityGrid> grid_ptr =
-    estimateDensityGrid(cloud_file, bounds, w, Eigen::Vector3i(nx, nx, nz), params.options, shift);
-  if (!grid_ptr)
-  {
-    return false;
-  }
-  const DensityGrid &grid = *grid_ptr;
-
-  if (grid.numUsedRays() == 0)
-  {
-    std::cout << "Warning: no usable rays of " << cloud_file << " cross tile " << params.tile.transpose()
-              << " (with its halo), so the tile is unobserved: its cells are NaN" << std::endl;
-  }
 
   // aggregate the tile's core voxels into cells, by height above ground (of the voxel centres)
   CellLayout layout;
@@ -506,18 +520,54 @@ bool estimateDensityTile(const std::string &cloud_file, const DensityTileParams 
   const size_t num_voxel_out = static_cast<size_t>(tile_voxels * tile_voxels * voxels_z);
   const float nan = std::numeric_limits<float>::quiet_NaN();
   std::vector<float> voxel_out(params.write_voxels ? num_voxel_out : 0, nan);
-  auto ground_height = [&](int x, int y) { return ground[static_cast<size_t>(x + nx * y)]; };
-  auto write_voxel = [&](const Eigen::Vector3i &voxel, const Eigen::Vector3d &centre, double density) {
-    const int vz = std::min(voxels_z - 1, static_cast<int>(std::floor(centre[2] / w)));
-    voxel_out[static_cast<size_t>((voxel[0] - halo_voxels) +
-                                  tile_voxels * ((voxel[1] - halo_voxels) + tile_voxels * vz))] =
-      static_cast<float>(density);
-  };
-  const std::vector<DensityCell> cells = aggregateDensityCells(
-    grid, shift, Eigen::Vector3i(halo_voxels, halo_voxels, 0),
-    Eigen::Vector3i(halo_voxels + tile_voxels, halo_voxels + tile_voxels, nz), layout, ground_height,
-    params.write_voxels ? std::function<void(const Eigen::Vector3i &, const Eigen::Vector3d &, double)>(write_voxel) :
-                          nullptr);
+  // every cell has voxels (the grid spans the height range above the lowest and highest ground)
+  std::vector<DensityCell> cells(static_cast<size_t>(cells_x * cells_y * cells_z));
+  for (DensityCell &cell : cells)
+  {
+    cell.total = 1;
+  }
+  // a tile that no ray crosses is valid (e.g. a tile of the domain beyond the scan), and is written as unobserved.
+  // The ray cloud reader fails on a file without rays, so that is detected first
+  const bool no_rays = isEmptyRayCloud(cloud_file);
+  size_t used_rays = 0;
+  if (!no_rays)
+  {
+    int shift = 0;
+    std::unique_ptr<DensityGrid> grid_ptr =
+      estimateDensityGrid(cloud_file, bounds, w, Eigen::Vector3i(nx, nx, nz), params.options, shift);
+    if (!grid_ptr)
+    {
+      return false;
+    }
+    const DensityGrid &grid = *grid_ptr;
+    used_rays = grid.numUsedRays();
+    auto ground_height = [&](int x, int y) { return ground[static_cast<size_t>(x + nx * y)]; };
+    auto write_voxel = [&](const Eigen::Vector3i &voxel, const Eigen::Vector3d &centre, double density) {
+      const int vz = std::min(voxels_z - 1, static_cast<int>(std::floor(centre[2] / w)));
+      voxel_out[static_cast<size_t>((voxel[0] - halo_voxels) +
+                                    tile_voxels * ((voxel[1] - halo_voxels) + tile_voxels * vz))] =
+        static_cast<float>(density);
+    };
+    cells = aggregateDensityCells(
+      grid, shift, Eigen::Vector3i(halo_voxels, halo_voxels, 0),
+      Eigen::Vector3i(halo_voxels + tile_voxels, halo_voxels + tile_voxels, nz), layout, ground_height,
+      params.write_voxels ? std::function<void(const Eigen::Vector3i &, const Eigen::Vector3d &, double)>(write_voxel) :
+                            nullptr);
+  }
+  size_t num_observed = 0;
+  for (const DensityCell &cell : cells)
+  {
+    num_observed += cell.observed > 0 ? 1 : 0;
+  }
+  if (num_observed == 0)
+  {
+    std::cout << "Warning: "
+              << (no_rays ? "the input has no rays" :
+                            (used_rays == 0 ? "no (usable) rays of the input cross the tile and its halo" :
+                                              "no voxel of the tile has enough rays"))
+              << ", so tile " << params.tile.transpose() << " is written as unobserved (NaN, observed_fraction 0)"
+              << std::endl;
+  }
 
   // chunk data in (z, y, x) C order, which is the order of the cells. Unobserved cells are NaN, except for their
   // observed fraction, which is 0

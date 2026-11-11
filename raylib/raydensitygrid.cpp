@@ -321,6 +321,11 @@ void DensityGrid::addNeighbourPriors()
       }
     }
   }
+  if (num_hit_points == 0.0)
+  {
+    std::cout << "Density calculation: no voxels have hits" << std::endl;
+    return;
+  }
   const double percentage = 100.0 * num_hit_points_unsatisfied / num_hit_points;
   std::cout << "Density calculation: " << percentage << "% of voxels had insufficient (<" << DENSITY_MIN_RAYS
             << ") rays within them" << std::endl;

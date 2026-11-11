@@ -641,6 +641,9 @@ TEST(Basic, RayDensityMissingFile)
             nullptr);
   EXPECT_FALSE(ray::renderCloud("missing_cloud.ply", bounds, ray::ViewDirection::Top, ray::RenderStyle::Density, 0.1,
                                 "missing_cloud.png", "", false, nullptr, options));
+  ray::DensityTileParams params;
+  params.tile_width = 1.0;
+  EXPECT_FALSE(ray::estimateDensityTile("missing_cloud.ply", params, "missing_cloud.zarr"));
 }
 
 /// The generator reports returns from stems at the range of the physical stem surface (or the closest approach of
@@ -794,6 +797,33 @@ std::vector<float> readZarrChunk(const std::string &file_name)
     data.push_back(value);
   }
   return data;
+}
+
+/// A tile without rays is valid, and is written as unobserved
+TEST(Basic, RayDensityEmptyTile)
+{
+  ray::Cloud cloud;
+  cloud.addRay(Eigen::Vector3d(10, 10, 1), Eigen::Vector3d(10, 11, 0), 0.0, ray::RGBA(255, 255, 255, 255));
+  cloud.save("far_tile.ply");  // a ray far from the tile
+  ray::Cloud empty;
+  empty.save("empty_tile.ply");
+  for (const std::string name : { "far_tile", "empty_tile" })
+  {
+    ray::DensityTileParams params;
+    params.tile_width = 1.0;
+    params.options.distribution = ray::ElementDistribution::VerticalCylinder;
+    params.options.path_estimator = ray::PathEstimator::PooledBeerLambert;
+    EXPECT_TRUE(ray::estimateDensityTile(name + ".ply", params, name + ".zarr"));
+    const std::vector<float> density = readZarrChunk(name + ".zarr/density/0.0.0");
+    const std::vector<float> observed = readZarrChunk(name + ".zarr/observed_fraction/0.0.0");
+    ASSERT_EQ(density.size(), 6u);  // 1 x 1 m cells of 0.1 m from 0 to 0.6 m
+    ASSERT_EQ(observed.size(), 6u);
+    for (size_t i = 0; i < density.size(); i++)
+    {
+      EXPECT_TRUE(std::isnan(density[i]));
+      EXPECT_EQ(observed[i], 0.0f);
+    }
+  }
 }
 
 /// Density estimated over 2 x 2 tiles (split by raysplit tiles, keeping ray starts) matches a single run over the
