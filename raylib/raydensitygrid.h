@@ -105,6 +105,28 @@ struct RAYLIB_EXPORT DensityOptions
   /// unchanged. Derived for tall stems in a uniform field of horizontal ray directions; it overcorrects slightly
   /// where stems end (their shadows are shorter) and in very regular stands
   bool self_shadow_correction = false;
+  /// With self_shadow_correction: use the second-order self-shadow factor (see ray::selfShadowFactor) instead of
+  /// 1 + s d_eff / W^2. The first-order factor is accurate to about 1% for d_eff / W up to 0.1 (the default pool
+  /// radius at 0.05 m voxels with no footprint), but undercorrects small neighbourhoods: by 5% for single 0.05 m
+  /// voxels (pool_radius 0) and a 2.3 cm effective width, d_eff / W = 0.46. The second-order factor also has a term
+  /// for the stem density, estimated from the occlusion neighbourhood (see occlusion_radius), which is valid to about
+  /// N d_eff W = 1 (900 stems/m^2 in 0.05 m voxels with a 2.25 cm effective width). Experimental, off by default
+  bool self_shadow_second_order = false;
+  /// For VerticalCylinder with the occlusion correction: the nominal half-width (m) of the neighbourhood whose
+  /// density the occlusion response R is inverted at, when larger than pool_radius (negative: pool_radius, the
+  /// default). Each voxel then takes its pooled neighbourhood's measured density (self-shadow corrected) times the
+  /// factor a / measured of this larger neighbourhood. Inverting R for small neighbourhoods is biased low, as their
+  /// measured density is noisy and a R(a) is convex in a: by about 5% for single 0.05 m voxels and 1 cm stems
+  double occlusion_radius = -1.0;
+  /// For the pooled estimator: correct each neighbourhood's hits / path for its finite number of rays, by the delta
+  /// method over the rays' segments (the ratio of sums of a few rays is biased high, by about 1 / (2 n) for n rays,
+  /// and more where their path lengths vary). It needs two more values per voxel. Experimental, off by default
+  bool ratio_bias_correction = false;
+  /// For the pooled estimator: blend voxels that have fewer than 10 rays with their neighbours (the neighbour priors,
+  /// as for the other estimators). The blend is weighted by path length, so it under-weights each neighbourhood's
+  /// dense voxels, and with small pooling neighbourhoods (pool_radius 0) it biases the density low where rays are
+  /// sparse: by 8% at 300 stems/m^2 near the ground with a quarter of the standard rays
+  bool pooled_neighbour_priors = true;
   /// Model the top of the cloud as a sharp boundary between air and a uniform medium (e.g. a grass or crop
   /// canopy), so the air above the highest point in each column is excluded. Not suited to elements of varying
   /// height such as pneumatophores, where it biases the upper layers.
@@ -229,6 +251,17 @@ struct RAYLIB_EXPORT DensityGrid
   inline void setMinGapRatio(double gap) { min_gap_ratio_ = gap; }
   /// Correct the pooled neighbourhood densities for the stems' self-shadowing (DensityOptions::self_shadow_correction)
   inline void setSelfShadowCorrection(bool correct) { self_shadow_correction_ = correct; }
+  /// Use the second-order self-shadow factor (DensityOptions::self_shadow_second_order)
+  inline void setSelfShadowSecondOrder(bool second_order) { self_shadow_second_order_ = second_order; }
+  /// Half-width (m) of the occlusion correction's neighbourhood, negative for the pool radius
+  /// (DensityOptions::occlusion_radius)
+  inline void setOcclusionRadius(double radius) { occlusion_radius_ = radius; }
+  /// Accumulate the ray moments for the finite-ray correction of the pooled ratio
+  /// (DensityOptions::ratio_bias_correction)
+  void enableRatioBiasCorrection();
+  /// Whether addNeighbourPriors blends voxels with few rays with their neighbours (true, the default). When false it
+  /// only shifts the voxels (see addNeighbourPriors)
+  inline void setBlendNeighbourPriors(bool blend) { blend_priors_ = blend; }
   /// The factor that converts a voxel's (corrected) hits to those without the self-shadow correction, for the pooled
   /// cell density. 1 without the correction. @c index is the voxel's index in voxels()
   inline double uncorrectedHitsScale(size_t index) const
@@ -301,6 +334,11 @@ private:
   double pool_radius_ = 0.05;
   double min_gap_ratio_ = 0.0;
   bool self_shadow_correction_ = false;
+  bool self_shadow_second_order_ = false;
+  double occlusion_radius_ = -1.0;
+  bool blend_priors_ = true;
+  std::vector<float> path_squares_;  // per voxel, sum over segments of (G rho L)^2, for the ratio bias correction
+  std::vector<float> hit_paths_;     // per voxel, sum over the hit segments of G rho L, for the ratio bias correction
   std::vector<float> uncorrected_scale_;  // per voxel, uncorrected / corrected hits, with the self-shadow correction
   static constexpr double max_solid_fraction_ = 0.4;
   Eigen::Vector3i hit_voxel_;  // voxel of the end point of the ray currently being walked
@@ -434,6 +472,15 @@ inline bool DensityGrid::operator()(const Eigen::Vector3i &p, const Eigen::Vecto
   {
     // accumulate rho weighted by G rho L (weighted_length), which is the weighting of the expected hits
     overlap_path_[static_cast<size_t>(index)] += static_cast<float>(rho * weighted_length);
+  }
+  if (!path_squares_.empty())
+  {
+    // the segment's moments for the delta method estimate of the ratio's bias (see ratio_bias_correction)
+    path_squares_[static_cast<size_t>(index)] += static_cast<float>(weighted_length * weighted_length);
+    if (p == hit_voxel_ && bounded_)
+    {
+      hit_paths_[static_cast<size_t>(index)] += static_cast<float>(weighted_length);
+    }
   }
   return false;
 }

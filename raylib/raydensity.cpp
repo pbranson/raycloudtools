@@ -325,13 +325,14 @@ bool estimateDensityTile(const std::string &cloud_file, const DensityTileParams 
               << params.num_tiles.transpose() << " tiles" << std::endl;
     return false;
   }
-  // the halo must cover the pooled neighbourhood and the neighbour prior of the tile's edge voxels, for the tile to
-  // match a single run over the whole domain
-  const double min_halo = params.options.pool_radius + 2.0 * w;
+  // the halo must cover the pooled neighbourhood (and the occlusion correction's, when larger) and the neighbour
+  // prior of the tile's edge voxels, for the tile to match a single run over the whole domain
+  const double min_halo = std::max(params.options.pool_radius, params.options.occlusion_radius) + 2.0 * w;
   if (params.halo >= 0.0 && params.halo < min_halo - 1e-6 * w)
   {
-    std::cerr << "Error: the halo " << params.halo << " m is less than the pool radius plus two voxel widths ("
-              << min_halo << " m), so the tile would not match a single run over the domain" << std::endl;
+    std::cerr << "Error: the halo " << params.halo
+              << " m is less than the pool (or occlusion) radius plus two voxel widths (" << min_halo
+              << " m), so the tile would not match a single run over the domain" << std::endl;
     return false;
   }
   const double halo = params.halo >= 0.0 ? params.halo : min_halo;
@@ -370,7 +371,15 @@ bool estimateDensityTile(const std::string &cloud_file, const DensityTileParams 
         << ",\n  \"max_sin_zenith\": " << params.options.max_sin_zenith
         << ",\n  \"occlusion_correction\": " << (params.options.overlap_correction ? "true" : "false")
         << ",\n  \"flat_top_compensation\": " << (params.options.flat_top_compensation ? "true" : "false")
-        << (params.options.self_shadow_correction ? ",\n  \"self_shadow_correction\": true" : "");
+        << (params.options.self_shadow_correction ? ",\n  \"self_shadow_correction\": true" : "")
+        << (params.options.self_shadow_second_order ? ",\n  \"self_shadow_second_order\": true" : "");
+  // the small-window options are recorded only when set, so stores written without them are unchanged
+  if (params.options.occlusion_radius >= 0.0)
+  {
+    attrs << ",\n  \"occlusion_radius\": " << params.options.occlusion_radius;
+  }
+  attrs << (params.options.ratio_bias_correction ? ",\n  \"ratio_bias_correction\": true" : "")
+        << (params.options.pooled_neighbour_priors ? "" : ",\n  \"neighbour_priors\": false");
   const std::string group_attrs = "{\n" + attrs.str() + "\n}\n";
   std::string existing;
   if (store.readText(".zattrs", existing) && existing != group_attrs)

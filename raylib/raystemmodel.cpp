@@ -79,6 +79,23 @@ double meanExitDistance(double width_x, double width_y)
   return 4.0 * integral / (2.0 * kPi * a * b);
 }
 
+double selfShadowFactor(double exit_distance, double area, double effective_width, double diameter,
+                        double optical_depth, bool range_to_outline)
+{
+  if (area <= 0.0)
+  {
+    return 1.0;
+  }
+  const double x = exit_distance * effective_width / area;
+  // the spread of the reported returns along the ray: over the physical stem, or over the widened outline
+  const double width = range_to_outline ? effective_width : diameter;
+  const double x_f = (range_to_outline ? 1.2 : 0.55) * kPi * width * width / (16.0 * area);
+  // the shadow can't remove all of a neighbourhood's free path, so limit the low-density factor (to 5) for widths
+  // beyond the fit
+  const double inverse = 1.0 - x - x_f + 0.76 * x * x * x;
+  return 1.0 / std::max(0.2, inverse) + 0.35 * x * std::max(0.0, optical_depth);
+}
+
 StemWidthModel::StemWidthModel(double diameter, const BeamFootprint &footprint)
   : diameter_(diameter)
   , enabled_(diameter > 0.0 && footprint.enabled())
