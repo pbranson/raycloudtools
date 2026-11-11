@@ -52,7 +52,11 @@ ground model  ->  ray binning into tiles (+ halo)  ->  per-tile density (paralle
   for the default pool_radius 0.05 at 5 cm voxels. A wider window (0.1: +-0.125 m, halo 0.2 m) reduces the
   self-shadowing bias of `density` (about +0.47 d_eff / window width: +6-8% at the default, +2-4% with 0.1, for 1 cm
   stems), but reads lower where stems are patchy or clustered at a smaller scale (cable roots: 0.87 with the default,
-  0.77 with 0.1). The default is recommended (see the report, sections 8.1 and 8.6).
+  0.77 with 0.1). The default is recommended (see the report, sections 8.1 and 8.6). `--self_shadow_correction`
+  removes the self-shadowing bias for fairly uniform stands, but is off by default, as it makes patches and cable
+  roots read low (report, sections 8.1 and 10). It needs `--stem_diameter` (and the pooled estimator, the default):
+  `raydensity` doesn't check this, and without them the option has no effect but is still recorded. It doesn't
+  change the halo.
 * `raydensity`'s voxel grid covers the halo (rounded up to whole voxels) plus one more voxel. The split (step 2)
   must cover that grid with some margin, so that the ray ends it clips lie outside the grid: split with a halo 1.5
   voxels larger, 0.225 m by default (`scripts/raydensity_tiles.sh` does this). A split halo equal to the
@@ -132,8 +136,8 @@ mesh triangles overlapping the tile and its halo are used, so one mesh for the w
   and halo), which Zarr readers ignore.
 * Variables (as implemented), on dimensions (z, y, x) for 1 x 1 x 0.1 m cells (300 x 300 x 6 per variable, small):
   `density` (N d, the mean of the observed voxel densities: the main output, which reads high by the self-shadowing
-  bias of the report's section 8.1), `pooled_density` (total corrected hits over total weighted path of the observed
-  voxels, i.e. the path-weighted mean of the voxel densities: within 3% for stems uniform within the cell, but about
+  bias of the report's section 8.1 unless `--self_shadow_correction` is given), `pooled_density` (total corrected
+  hits over total weighted path of the observed voxels, i.e. the path-weighted mean of the voxel densities: within 3% for stems uniform within the cell, but about
   half the truth where stems are patchy within the cell, and low where the density falls with height),
   `patchiness_ratio` (density / pooled_density: 1.03-1.09 for random stems in the lowest 0.2 m, 1.6-2.4 for patches
   and cable roots), `solid_fraction` (N pi d^2 / 4 from `density`), `hits`, `weighted_path` and `observed_fraction`
@@ -145,8 +149,9 @@ mesh triangles overlapping the tile and its halo are used, so one mesh for the w
 * Attributes (`.zattrs` of the group): title, quantity, density_model, origin, tile_width, num_tiles,
   voxel_width, cell_size, height_range, heights_above_ground, voxels, stem_diameter, footprint, return_range,
   estimator, pool_radius, min_gap_ratio, min_sin_zenith, max_sin_zenith, occlusion_correction and
-  flat_top_compensation. Not yet written: the CRS (the coordinates are in the cloud's frame) and the software
-  version. The per-tile command lines are in `tiles/i_j.json`.
+  flat_top_compensation, plus `"self_shadow_correction": true` when that option is set (absent otherwise, so stores
+  written without it are unchanged; tiles run with and without it can't share a store). Not yet written: the CRS
+  (the coordinates are in the cloud's frame) and the software version. The per-tile command lines are in `tiles/i_j.json`.
 * Because `density` is a mean of voxel values, and `observed_fraction`, `hits` and `weighted_path` are also stored,
   coarser cells (e.g. 5 m for a larger model domain) can be aggregated from the store: `pooled_density` from the
   summed hits and paths, and `density` weighted by the number of observed voxels (`observed_fraction` times the

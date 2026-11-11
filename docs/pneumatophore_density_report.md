@@ -19,10 +19,15 @@ R(φ, ρ, g), applied to hits and path pooled over a horizontal neighbourhood of
 into cells (`density`, the main output) and also pooled (`pooled_density`), and their ratio flags patchiness.
 
 On synthetic scans of randomly placed stems (30–1000 stems/m², 5 cm voxels), `density` in the lowest 0.1 m reads
-4–8% high, a geometric self-shadowing bias of about +0.47·d_eff/W (W the pooling window width) that does not depend
-on the number of rays or the stem density and is under investigation; `pooled_density` is within 3%, but reads
-about half the truth where stems are patchy within the cell. Stems in rows along cable roots read 13% low. The
-estimate is about as sensitive to the assumed stem diameter (−11% / +9% for ±20% at 300 stems/m²) as to the beam
+4–8% high. This is self-shadowing: a stem removes the free path behind it within its own pooling window but keeps
+its own hits. A Monte Carlo test that removes only that shadow removes the bias, and to first order it is
+c·d_eff/W with c = 0.4732 (W the window width), whatever the number of rays or the stem density. An optional
+correction (`--self_shadow_correction`) divides each window by this factor and brings uniform stands to 1.000–1.008
+of the truth in the lowest 0.1 m. It is off by default: in clumped stands the self-shadow had been cancelling an
+opposite bias of uneven windows, and with the correction patches read 0.92–0.96 and cable roots 0.81, so the
+current accuracy there rests on that cancellation. `pooled_density` is within 3% for uniform stems, but reads about
+half the truth where stems are patchy within the cell; stems in rows along cable roots read 13% low in `density`.
+The estimate is about as sensitive to the assumed stem diameter (−11% / +9% for ±20% at 300 stems/m²) as to the beam
 detection threshold (−11 to −12% / +22 to +27% for 0.4 / 3 times the true threshold), and to the minimum gap
 between stems at high density (up to +34%). Layers above 0.1 m depend on how stem tops and partial returns are
 treated by 5–15%, and poorly penetrated cells (observed fraction below about 0.9) read low. All results are
@@ -166,8 +171,9 @@ random stems/m² (Table 2).
 
 **`beer_lambert`** (the raycloudtools default): Eq. (3) per voxel, multiplied by the small-sample factor (n − 1)/n
 of the original estimator, for the voxel's n rays (`DensityGrid::Voxel::density`). It read 1.24–1.31 of the truth
-in the lowest 0.1 m and 1.31–1.39 at 0.1–0.2 m (cell means). The likely cause is the self-shadowing bias of
-Section 8.1 at a window of one voxel (W = 5 cm, about +20%).
+in the lowest 0.1 m and 1.31–1.39 at 0.1–0.2 m (cell means). Most of this is the self-shadowing bias of
+Section 8.1 at a window of one voxel (W = 5 cm: +21% to first order, +28–29% measured with `--estimator pooled
+--pool_radius 0`).
 
 **`crossing`**: hit rays count their path to where they would have left the voxel, plus the mean chord of the
 widened stem that remains beyond the return, divided by sin θ:
@@ -201,7 +207,8 @@ tightly than the window read low (Section 8.6), and the remaining self-shadowing
 (Section 8.1). Pooled corrected values were 1.01–1.08 of the truth (cell means; 0.98–1.01 path-weighted).
 
 With `beer_lambert` and the occlusion correction on (a stem diameter given), the neighbourhood ratio is used only to
-compute the correction factor, which is applied to the voxel's own estimate.
+compute the correction factor, which is applied to the voxel's own estimate. With `pooled`, `--self_shadow_correction`
+also divides m_v by a self-shadow factor before the occlusion correction (Section 8.1, Eq. 12).
 
 ## 5. Occlusion and space-occupancy correction
 
@@ -278,14 +285,15 @@ $$\texttt{density} = \frac{1}{n_\mathrm{obs}}\sum_v a_v, \qquad \texttt{pooled\_
 
 * `density` (main output): the mean of the observed voxel densities, each voxel weighted equally (by volume), so
   the volume average that a hydrodynamic cell needs. It follows patchy stems, but carries the self-shadowing bias
-  of Section 8.1 (+4–8% for random stems in the lowest 0.1 m at the default settings).
+  of Section 8.1 (+4–8% for random stems in the lowest 0.1 m at the default settings) unless
+  `--self_shadow_correction` is given.
 * `pooled_density`: the cell's corrected hits over its weighted path, i.e. the path-weighted mean of the voxel
   densities. Rays penetrate dense parts less, so they get less weight, horizontally and vertically: it is within 3%
   only where the stems are uniform within the cell in both directions, about half the truth for patches within the
   cell, and low in layers where the density falls with height (Section 8.5).
 * `patchiness_ratio`: in the lowest 0.2 m, 1.03–1.09 for random stems at the default pool (mostly the bias of
-  `density`), 1.6–2.4 for patches and cable roots. Higher up, the vertical profile within the cell also raises it
-  (up to 1.17 for random stems at 0.2–0.3 m).
+  `density`; 0.97–1.02 with `--self_shadow_correction`), 1.6–2.4 for patches and cable roots. Higher up, the
+  vertical profile within the cell also raises it (up to 1.17 for random stems at 0.2–0.3 m).
 * `hits` (Σ a_v P_v, the corrected hits), `weighted_path` (Σ P_v) and `observed_fraction` (n_obs over the cell's
   voxels). The profile (`--profile`) gives the same per horizontal layer of voxels, with `observed_voxels`,
   `total_voxels` and `mean_hits_per_voxel`.
@@ -305,22 +313,36 @@ otherwise the voxel count per cell varies with the ground height, and isn't stor
 ### 7.1 Generator and scenes
 
 `raycreate pneumatophores <seed>` (`raylib/raypneumatophoregen.cpp`) generates vertical cylinders of one diameter
-(1 cm) on flat ground at z = 0, with heights drawn from a normal distribution of mean 0.25 m and s.d. 0.08 m
-(truncated to be positive; 3%, 24%, 47% and 24% of stems end in successive 0.1 m layers), and scans them with a
-hand-held lidar walked along a lawnmower path:
+(1 cm, `--diameter`) on flat ground at z = 0, and scans them with a hand-held lidar walked along a lawnmower path.
+The defaults, used for every result unless stated, are:
 
+* Heights: normal, mean 0.25 m and s.d. 0.08 m (`--height mean,sd`; heights below 2 cm are redrawn; 3%, 24%, 47%
+  and 24% of stems end in successive 0.1 m layers). `--height 0.6,0` gives stems of one height, and
+  `--uniform_height min,max` heights uniform in a range.
 * Arrangement: random, non-overlapping (random sequential addition with the exact number of stems; `--min_gap`
   for a minimum gap, `--overlapping` for Poisson positions); `--patchy radius,cover,matrix_ratio` (stems only in
   random circular patches); or `--clustered` (stems along cable roots radiating from trees, 0.04 trees/m², 12 roots
   of 6 m per tree, stems offset from the root lines with s.d. `--cluster_spread`).
-* Scan: a 6 × 6 m plot (stems generated 8 m beyond it), scanner at 1.2 m height walking lines 1 m apart, 2 000 000
-  rays (about 56 000 per m² of plot) uniform over zenith angles 0–101.5°, 30 m range for rays with no return; ground
-  returns are given zero alpha (perfectly classified).
-* Beam: Gaussian, 10 mm exit diameter, 3 mrad divergence, τ = 0.05, `surface` return range; stem tops are solid
-  discs of the widened outline. No range noise, pose error or intensity.
-* Truth: N d in each 1 × 1 × 0.1 m cell and each 1 cm layer, from the stems' positions and heights.
+* Scan: a 6 × 6 m plot (`--plot_width`; stems generated 8 m beyond it), scanner at 1.2 m height
+  (`--scanner_height`) walking lines 1 m apart (`--walk_spacing`), 2 000 000 rays (`--rays`; about 56 000 per m² of
+  plot) uniform over zenith angles 0–101.5° (`--zenith`), 30 m range for rays with no return; ground returns are
+  given zero alpha (perfectly classified; `--ground_returns` keeps them as returns).
+* Beam: Gaussian, 10 mm exit diameter, 3 mrad divergence, τ = 0.05, `surface` return range (`--footprint`,
+  `--return_range`); stem tops are solid discs of the widened outline. No intensity.
+* Measurement errors: none by default. `--range_noise sd` adds normal noise to the range of each return;
+  `--pose_noise sd,interval` offsets each ray by a smooth trajectory error, independent normal values per axis every
+  `interval` metres of walk, interpolated linearly. They use their own random sequence, so the stems and the ideal
+  rays are those of the noise-free scene.
+* Truth: N d in each 1 × 1 × 0.1 m cell (`--truth_cells`) and each 1 cm layer, from the stems' positions and
+  heights.
 
 Scenes depend only on the seed and options, on any platform.
+
+**Stage-1 self-shadowing scenes.** The results of Sections 8.1 and 8.3 that compare the estimator with and without
+`--self_shadow_correction` used smaller scenes: a 4 × 4 m plot (`--plot_width 4`) scanned with 56 250 rays per
+metre of walk (0.9 M rays at 1 m line spacing, the ray density of the standard scene), 16 cells per layer, seeds
+101–104, reported as the mean over seeds (standard errors of `density` 0.001–0.01 for well observed random stems,
+up to 0.015 in poorly observed layers and 0.02 in patches and along cable roots).
 
 **Metric.** Each table gives the plot total Σ estimate / Σ truth over the 36 cells of a 0.1 m layer of the 6 × 6 m
 plot, as the mean ± s.d. over independent scenes (seeds), estimated with `--estimator pooled`, 5 cm voxels, the
@@ -353,9 +375,10 @@ lowest 0.1 m (0.1–0.2 m in brackets for `density` and `pooled_density`).
 | 1000 | 0.93 | 1.039 (1.076) | 1.008 (0.999) | 1.230 | 0.815 | 1.240 | 2.15 |
 | 1500 | 0.68 | 1.011 (1.060) | 0.981 (1.014) | 1.317 | 0.739 | 1.246 | 2.13 |
 
-`density` reads 6–8% high wherever the cells are fully observed, independently of the density (Section 8.1). The
-lower values at 1000 and 1500 stems/m² are not better accuracy: there 7% and 32% of the lowest layer's voxels are
-unobserved, and the low bias of poorly observed cells (Section 8.3) cancels part of the high bias.
+`density` reads 6–8% high wherever the cells are fully observed, independently of the density: this is the
+self-shadowing bias, which `--self_shadow_correction` removes for random stems (Section 8.1). The lower values at
+1000 and 1500 stems/m² are not better accuracy: there 7% and 32% of the lowest layer's voxels are unobserved, and
+the low bias of poorly observed cells (Section 8.3) cancels part of the high bias.
 
 ### 7.3 Patches and cable roots
 
@@ -372,9 +395,11 @@ Pneumatophores are often patchy and are normally arranged in rows along the cabl
 | Patches of 0.2 m radius, 30% cover, 300 stems/m² within | 0.991 (1.014) | 0.882 (0.923) | 0.551 (0.640) | 1.88 (1.64) | 1.036 |
 
 Stems along cable roots read 13% low with the default pool and 23% low with `--pool_radius 0.1`, because they are
-clustered more tightly (3 cm) than the window (Section 8.6). This rests on one configuration (one density, one
-spread, 4 scenes). `pooled_density` is about half the truth in every non-random arrangement, and lower still over a
-whole 6 m profile layer (0.30 for 0.5 m patches and 0.34 for cable roots, one scene each).
+clustered more tightly (3 cm) than the window (Section 8.6). `pooled_density` is about half the truth in every
+non-random arrangement, and lower still over a whole 6 m profile layer (0.30 for 0.5 m patches and 0.34 for cable
+roots, one scene each). The near-unity `density` in patches, and the cable roots' −13% rather than more, are partly
+a cancellation with the self-shadowing bias: with `--self_shadow_correction` these arrangements read 4–8% and 19%
+low (Section 8.1).
 
 ### 7.4 Ray angles and ray count
 
@@ -512,50 +537,135 @@ heights would detect lean.
 
 ## 8. Known biases and limitations
 
-### 8.1 Self-shadowing bias of `density` (open)
+### 8.1 Self-shadowing bias of `density`, and an optional correction
 
 `density` reads high by 4–8% for random stems at the default settings, by the same amount at 30 and 600 stems/m²
-(Table 2), and whatever the number of rays (Section 7.4). This is not the noise of ratios of few hits. The likely
-cause is geometric self-shadowing: a stem removes the free path behind it within its own pooling window, so windows
-that hold stems have less path and a higher hits/path than their true share, and the equal-weight mean of the
-window ratios is high. A derivation (by an independent reviewer; the mean distance from a random point of a square
-to its edge along a random direction is about 0.47 W) gives a relative bias of about
+(Table 2), and whatever the number of rays (Section 7.4). `pooled_density`, the path-weighted mean, does not have
+this bias for uniform stems.
 
-$$b \approx 0.47\,\frac{d_\mathrm{eff}}{W}, \tag{11}$$
+**Mechanism.** A stem removes the free path behind it within its own pooling window, but keeps its own hits.
+Windows that hold a stem therefore have less path than their true share and a higher hits / path, and the
+equal-weight mean of the window ratios is high. The evidence (stage-1 study, Section 7.1):
 
-independent of the stem density and of the scan density. Predicted (using the run's mean ρ̄, d_eff = ρ̄ · 1 cm)
-against measured (`density` − 1, lowest 0.1 m):
+* *Own-shadow test.* A 2D Monte Carlo of the window estimator (`scripts/pneumatophore_self_shadow_mc2d.cpp`:
+  infinitely tall stems in a periodic domain, lines recorded only after a pre-path long enough that every stem
+  upstream of a recorded point lies on the line's past, as for tall stems in 3D) can continue each line through the
+  stem it returned from, within that stem's own window only. This removes the bias: at the default window
+  (W = 0.15 m) and d_eff of 1–2.3 cm, the window mean relative to the path-weighted value fell from 1.03–1.09 to
+  0.99–1.02 (at 600 stems/m², from 1.10 to 1.04).
+* *Crediting the whole path* behind every hit to the window edge (the crossing estimator's idea at window scale)
+  overcorrects: 0.48–0.96 of the truth in the same model.
+* *Not ray count.* 0.5, 2 and 8 M rays gave the same `density` (Section 7.4), and a quarter of the rays changed it by
+  under 2% at the default window (30 and 300 stems/m², stage-1 scenes).
+* *Not stem tops or the ground.* Stems of one height (0.6 m) and stems taller than the scanner (2 m, no tops in
+  view) read 1.060–1.075 at 0.1–0.4 m where fully observed (100 and 300 stems/m²), as the standard scenes do
+  (1.067–1.087 at 0–0.2 m).
+* *Smaller in very regular stands.* In the 2D model, stems at least one diameter apart gave +0.9% against +2.9% for
+  random stems (1000 stems/m², d_eff = 1 cm). A reduction predicted from the hard-core spacing of stems with no gap
+  was not detected.
 
-| Case | W (m) | d_eff (cm) | Predicted | Measured | Observed fraction |
+**First-order bias.** A hit's own stem shadows the rest of that ray's path to the edge of the window, on average the
+mean exit distance s of the window (the mean distance from a uniformly random point of the window to its edge along a
+uniformly random horizontal direction). To first order (derived for tall stems and horizontal ray directions, not
+fitted), the relative bias of the window mean is
+
+$$\beta = \frac{s\,d_\mathrm{eff}}{W^2} = c\,\frac{d_\mathrm{eff}}{W}, \qquad c = \frac{4\ln(1+\sqrt2) - \tfrac43(\sqrt2-1)}{2\pi} = 0.4732, \tag{11}$$
+
+for a square window of width W (s = c W). Windows clipped at the grid's edge are rectangles: W² is replaced by their
+area and s by the rectangle's mean exit distance (`ray::meanExitDistance` in `raylib/raystemmodel.cpp`). To first
+order the bias does not depend on the stem density or the number of rays.
+
+**Table 8.** First-order bias against the measured bias, measured as `density` / `pooled_density` − 1 without the
+correction (for uniform stems `pooled_density` has no self-shadowing bias, so the ratio leaves out the occlusion
+correction's errors), random stems, lowest 0.1 m, well observed cells, stage-1 scenes.
+
+| Case | W (m) | d_eff (cm) | d_eff/W | Eq. (11) | Measured |
 |---|---|---|---|---|---|
-| 30 stems/m², 5 cm voxels | 0.15 | 2.42 | +7.6% | +8.0% | 1.00 |
-| 100 stems/m² | 0.15 | 2.35 | +7.4% | +7.5% | 1.00 |
-| 300 stems/m² | 0.15 | 2.25 | +7.1% | +6.3% | 1.00 |
-| 600 stems/m² | 0.15 | 2.19 | +6.9% | +6.1% | 1.00 |
-| 300 stems/m², `--pool_radius 0.1` | 0.25 | 2.25 | +4.2% | +3.3% | 1.00 |
-| 100 stems/m², `--pool_radius 0.1` | 0.25 | 2.35 | +4.4% | +4.2% | 1.00 |
-| 300 stems/m², 2.5 cm voxels | 0.125 | 2.25 | +8.5% | +7.1% | 0.99 |
-| 300 stems/m², 10 cm voxels | 0.30 | 2.25 | +3.5% | +2.2% | 1.00 |
-| 300 stems/m², near-perfect beam | 0.15 | 1.10 | +3.4% | +3.1% | 1.00 |
-| 1000 stems/m², near-perfect beam | 0.15 | 1.10 | +3.4% | +3.0% | 1.00 |
-| 1000 stems/m², 5 cm voxels | 0.15 | 2.15 | +6.7% | +3.9% | 0.93 |
-| 1500 stems/m², 5 cm voxels | 0.15 | 2.13 | +6.7% | +1.1% | 0.68 |
+| `--pool_radius 0.15` | 0.35 | 2.2–2.3 | 0.064 | +3.0% | +2.7 to +2.9% |
+| No footprint (d_eff = d) | 0.15 | 1.0 | 0.067 | +3.2% | +3.5 to +3.7% (300, 1000 stems/m²) |
+| `--pool_radius 0.1` | 0.25 | 2.2–2.3 | 0.089 | +4.2% | +4.4 to +4.7% |
+| Default | 0.15 | 2.2–2.3 | 0.149 | +7.0% | +8.8% (300 stems/m²; 2D model also +8.8%) |
+| Wide footprint (20 mm, 5 mrad) | 0.15 | 3.3 | 0.22 | +10.6% | +12 to +14% |
+| Single voxel (`--pool_radius 0`) | 0.05 | 2.2–2.3 | 0.45 | +21% | +28 to +29% |
 
-Where the cells are fully observed, Eq. (11) predicts the measurements to within about 1.5 percentage points, and
-over-predicts slightly at the narrowest and widest windows; where they are not, the low bias of Section 8.3 cancels part of it.
-Consequences:
+Eq. (11) is within 10% of the measured bias up to d_eff/W ≈ 0.1. Beyond that the bias is about 1.15–1.35 times
+larger: a second-order term, not yet derived or tabulated. (Over 30–600 stems/m² the default case measured +8.7 to +9.5% in both
+layers, except +6.1% at 600 stems/m² and 0–0.1 m.) Consequences:
 
 * More scanning will not reduce the bias, but it is predictable: it scales with d_eff/W, so it is larger for thicker
-  stems, longer ranges (d_eff 3 cm at 5 m gives about +10% at W = 0.15 m) and smaller windows, and the +4–8% holds
+  stems, longer ranges (d_eff of 3 cm at 5 m gives about +10% at W = 0.15 m) and smaller windows, and the +4–8% holds
   only for this configuration.
 * The `patchiness_ratio` of about 1.09 for random stems is mostly this bias.
 * A larger window (`--pool_radius 0.1`, or larger voxels) reduces it, but reads low where stems are clustered or
   patchy at a smaller scale than the window (Table 3). The choice of pool radius therefore trades this bias against
   the clustering bias; it is not a remedy for either.
 
-This is a known, deterministic bias that is under active investigation; a correction is being developed separately.
-Until then, treat `density` as reading high by about 0.47·d_eff/W, and note that Eq. (11) has been checked only for
-the cases in the table above (one stem diameter, one scan geometry).
+**The correction (`--self_shadow_correction`, off by default).** With this option each voxel's neighbourhood density
+of Eq. (8) is divided by its first-order factor before the occlusion correction of Eq. (9):
+
+$$m_v' = \frac{m_v}{1 + s_v\,\bar\rho_v\,d / A_v}, \tag{12}$$
+
+where A_v is the area of the neighbourhood (W² away from the grid's edge), s_v its mean exit distance and
+ρ̄_v d its mean effective stem width. `pooled_density` is left as it was. The option needs `--estimator pooled` and
+`--stem_diameter`: `rayrender` refuses it otherwise, while `raydensity` (pooled by default) doesn't check, and without
+`--stem_diameter` has no effect. It is deterministic, added about 9% to the run time, and the run prints the mean
+factor (1.071 for a 300 stems/m² scene at the default settings). `raydensity` records it in the store's `.zattrs`
+(`"self_shadow_correction": true`, written only when set).
+
+**Table 9.** `density` / truth without and with the correction (stage-1 scenes, 4 seeds; cases whose layer is at
+least 95% observed, except where stated).
+
+| Case | Without, 0–0.1 m | With, 0–0.1 m | Without, 0.1–0.2 m | With, 0.1–0.2 m |
+|---|---|---|---|---|
+| Random, 30–600 stems/m² | 1.067–1.075 | 1.000–1.008 | 1.078–1.087 | 1.010–1.021 |
+| No footprint, 300–1500 stems/m² | 1.019–1.031 | 0.992–1.001 | 1.039–1.044 | 1.010–1.016 |
+| Wide footprint, 100–300 stems/m² | 1.100–1.110 | 1.003–1.006 | 1.121–1.126 | 1.020–1.022 |
+| Stem diameter 0.5 and 2 cm | 1.057–1.100 | 1.000–1.003 | 1.057–1.128 | 1.008–1.028 |
+| Voxels 2.5–10 cm, pool radius 0.05–0.15 m (W 0.125–0.35 m) | 1.023–1.089 | 0.993–1.004 | 1.031–1.102 | 0.997–1.023 |
+| One height (0.6 m) or taller than the scanner (2 m), 100–300 stems/m², 0.1–0.4 m | | | 1.060–1.075 | 0.994–1.007 |
+| 1 cm range noise or 2 cm pose noise, 300 stems/m² | 1.061–1.066 | 0.995–1.000 | 1.058–1.076 | 0.991–1.008 |
+| Overlapping (Poisson) stems, 300 stems/m² | 1.032 | 0.968 | 1.047 | 0.981 |
+| Patches of 0.2–0.5 m radius, 30% cover, 300 stems/m² | 0.986–1.022 | 0.922–0.957 | 1.021–1.047 | 0.955–0.980 |
+| Patches of 0.3 m radius, 30% cover, 1000 stems/m² | 0.834 | 0.786 | 0.931 | 0.877 |
+| Cable roots, 150 stems/m² | 0.867 | 0.811 | 0.898 | 0.840 |
+| Cable roots, 150 stems/m², `--pool_radius 0.1` | 0.757 | 0.726 | 0.789 | 0.757 |
+| Cable roots, 500 stems/m² | 0.470 | 0.441 | 0.587 | 0.552 |
+
+For uniform stems the correction leaves `density` within 1% of the truth in the lowest 0.1 m and 1–3% high at
+0.1–0.2 m, the residual being the second-order term. Overlapping stems read low with it because the occlusion
+correction assumes non-overlapping stems (`pooled_density` read 0.945 and 0.957 there). The correction does not
+change the sensitivity to the assumed diameter: ±20% gave −10.4% / +8.1% with it, against −10.8% / +8.6% without
+(300 stems/m², 0–0.1 m).
+
+*Caveat at 0–0.1 m.* The near-unity values in the lowest layer are partly a cancellation. The correction falls about
+2% short (`density` / `pooled_density` was still 1.02 with it at 300 stems/m²), and in that layer `pooled_density`
+itself reads about 2% low (0.981 at 300 stems/m²), for a reason not yet found. At 0.1–0.2 m, where `pooled_density`
+is within 1%, the corrected `density` reads 1–2% high.
+
+**Why it is off by default.** In clumped stands the correction makes `density` worse: patches read 0.92–0.96 and cable
+roots 0.81 with it (Table 9). The cause is heterogeneity within the window. A window that straddles a patch edge or a
+root line under-weights its dense part (its ratio is path-weighted, and rays penetrate the dense part less), so it
+reads low. Without the correction, the self-shadowing bias cancelled this. **The current accuracy of the default
+`density` in patches (Table 3) and the size of the cable-root bias (−13%) therefore rest on that cancellation**, not
+on the estimator being right for those arrangements, and may not hold for other patch sizes, densities, beams or
+windows. Leave the correction off where stems are clumped within the window (a high `patchiness_ratio`), and use it
+for fairly uniform stands (Section 10).
+
+**Remedies considered and rejected.**
+
+* Crediting the whole path behind each hit: overcorrects (0.48–0.96, above).
+* Removing each stem's own shadow by stem identity: right in the model, but real scans don't identify the stems.
+* Weighting windows by their expected unshadowed path: about −20% in patches (derived, not run).
+* The geometric mean of `density` and `pooled_density`: 0.56–0.59 in patches and along cable roots.
+* Switching the correction by `patchiness_ratio`: right only by the same cancellation, and discontinuous.
+
+**In progress (stage 2).** Single-voxel windows (`--pool_radius 0`) with the correction and a fitted second-order
+term are being studied: they resolve patches and root lines rather than averaging across them. In stage 1, with the
+first-order correction only, they read 1.024–1.025 for uniform stems (and 0.92 with a quarter of the rays, so they
+need a guard for sparse scans), 1.008–1.022 in patches and 0.966–0.985 along cable roots (lowest 0.2 m). The wider
+validation matrix (scan geometry, range and pose noise, diameter error, height distributions, low observation,
+clustering, return convention, spacing and window size, with and without the correction) is also in progress. No
+results from either are reported here.
 
 ### 8.2 Stem tops and the return convention
 
@@ -588,16 +698,44 @@ upper layers read about 2%, 5%, 11% and 18% above the lowest layer for 0.1–0.2
 
 ### 8.3 Poorly observed cells read low
 
-Where rays penetrate poorly, the estimates read low, in both columns, probably because the observed voxels are the
-less occluded ones (the mechanism has not been isolated). At 1500 stems/m², 32% of the lowest layer's voxels were
-unobserved (mean `observed_fraction` 0.68), and `density` read 1.011, about 5% below the fully observed value; the
-"+1%" is the cancellation of this with Section 8.1. With stems of uniform height 0.6 m at 1000 stems/m² (one scene),
-`observed_fraction` was 0.28, 0.41, 0.58, 0.80 and 0.97 in the 0.1 m layers from the ground, and `density` read
-0.911, 0.948, 0.990, 1.030 and 1.038 (`pooled_density` 0.873, 0.907, 0.955, 1.000, 0.990): 9–12% low in the two
-lowest layers relative to the well observed ones. Treat cells with `observed_fraction` below about 0.9 as reading low
-(about −5% at 0.7 and −10% or more at 0.3–0.4 in simulation). All validation scenes used one scan geometry (scanner
-at 1.2 m, lines 1 m apart, about 56 000 rays/m²) and stems of 0.25 m mean height, which is a favourable case; field
-scans with wider line spacing, longer ranges, or taller or denser stems will be more penetration-limited.
+Where rays penetrate poorly, the estimates read low. A stage-1 analysis at voxel resolution
+(`scripts/pneumatophore_low_observation_study.py`: dense stems, stems of one height or taller than the scanner, and
+2 m line spacing; 8 scenes on 4 m plots, binned over the 1 × 1 × 0.1 m cells below the stem tops) separates two
+components:
+
+1. *Selection.* The observed voxels are the less occluded places. Below an observed fraction of 0.9, the true
+   density of the windows they sample was 1.4–4.1% below the cell's (0.959–0.986), so even an exact estimate of the
+   observed part reads low.
+2. *Poor penetration.* Windows that are observed but poorly penetrated also read low: with the self-shadow
+   correction, their estimates were 0.870–0.972 of the truth of the windows sampled, below an observed fraction of
+   0.9.
+
+**Table 10.** `density` / truth binned by the cell's `observed_fraction` (truth-weighted means over the cells).
+
+| Observed fraction | Cells | Without correction | With `--self_shadow_correction` |
+|---|---|---|---|
+| 0.9–1.0 | 64 | 1.062–1.063 | 1.005–1.008 |
+| 0.5–0.9 | 203 | 0.997–1.012 | 0.945–0.957 |
+| below 0.5 | 85 | 0.878–0.954 | 0.834–0.906 |
+
+Without the correction, cells observed 0.5–0.9 read right only because the self-shadowing bias cancels this low
+bias. The same cancellation gives the "+1%" at 1500 stems/m² in Table 2 (observed fraction 0.68; in the stage-1
+scenes 1.011 without the correction and 0.961 with it). With stems of one height (0.6 m) at 1000 stems/m², the
+observed fraction was 0.28, 0.41, 0.58, 0.79 and 0.97 in the 0.1 m layers from the ground, and `density` read
+0.893, 0.960, 0.988, 1.022 and 1.044 without the correction and 0.848, 0.911, 0.937, 0.969 and 0.989 with it
+(stage-1 scenes, 4 seeds).
+
+Neither remedy tried helped: filling unobserved voxels from their observed neighbours changed the binned values by
+−0.6 to +1.2 points, and scaling the self-shadow factor by the window's observed voxel fraction recovered only
+0.6–2.1 points below 0.9. The proposal is therefore to flag or mask cells below an observed fraction of 0.9 rather
+than correct them. The outputs don't do this yet, so mask such cells when using the results, with or without the
+correction.
+
+All the other validation scenes used one scan geometry (scanner at 1.2 m, lines 1 m apart, about 56 000 rays/m²)
+and stems of 0.25 m mean height, which is a favourable case. In stage 1, lines 2 m apart from a scanner at 2 m kept
+the lowest layer fully observed at 300 stems/m² (1.064 without the correction, 0.992 with it), but at 1500
+stems/m² lines 2 m apart left it 0.38 observed (0.975 and 0.927). Field scans with wider line spacing, longer
+ranges, or taller or denser stems will be more penetration-limited.
 
 ### 8.4 Inputs: diameter and threshold
 
@@ -621,21 +759,25 @@ horizontally and vertically, and it also carries the stem-top bias: at 300 stems
 Stems clustered more tightly than the window read low, as any free-path estimate does when pooled over uneven
 cover: cable roots with a 3 cm lateral spread read 0.87 (default window, 0.15 m) and 0.77 (0.25 m window), with a
 `patchiness_ratio` of 1.6–1.8 in the lowest 0.2 m (Table 3). This is the normal arrangement of pneumatophores, so
-it matters; only one configuration has been simulated.
+it matters. Only one spread has been simulated, and at a higher density along the same roots (500 stems/m², stage-1
+scenes) `density` read 0.47 in the lowest 0.1 m and 0.59 at 0.1–0.2 m. Part of the low bias is cancelled by the
+self-shadowing bias: with `--self_shadow_correction`, 150 stems/m² read 0.81 (Section 8.1).
 
 ### 8.7 Summary of residual biases (synthetic, default settings, 5 cm voxels, 1 × 1 × 0.1 m cells)
 
 | Bias | Size | Applies to | Section |
 |---|---|---|---|
-| Self-shadowing (open) | +4–8% (≈ +0.47 d_eff/W) | `density`, all arrangements | 8.1 |
+| Self-shadowing | +4–8% (first order 0.4732 d_eff/W; about 1.15–1.35 times that beyond d_eff/W ≈ 0.1) | `density` without `--self_shadow_correction` | 8.1 |
+| Residual with `--self_shadow_correction` | 1.000–1.008 at 0–0.1 m (partly a cancellation), 1.010–1.021 at 0.1–0.2 m, random stems | `density` | 8.1 |
+| Heterogeneity within the window (patch edges, root lines) | hidden by the self-shadowing bias without the correction; with it, patches 0.92–0.96, cable roots 0.81 | `density` | 8.1 |
 | Stem tops and return convention | 5–15% above 0.1 m, growing with height | both | 8.2 |
-| Poor penetration | about −5% at observed fraction 0.7, −10% or more at 0.3–0.4 | both | 8.3 |
+| Poor penetration (observed fraction below 0.9) | without the correction about 1.00–1.01 at 0.5–0.9 by cancellation, 0.88–0.95 below 0.5; with it 0.945–0.957 and 0.83–0.91 | both | 8.3 |
 | Diameter error ±20% | −11% / +9% (300/m²), −8% / +5% (1000/m²) | both | 8.4 |
 | Threshold error (0.4×, 3×) | −11 to −12% / +22 to +27% | both | 8.4 |
 | Minimum gap ignored (g = 1) | +4% (100/m²) to +34% (1000/m²) | both | 5 |
 | Patchiness within the cell | about −50% | `pooled_density` | 8.5 |
 | Vertical path weighting | e.g. −5% at 0.2–0.3 m (1000/m²) | `pooled_density` | 8.5 |
-| Clustering below the window (cable roots) | −13% (default), −23% (`--pool_radius 0.1`) | `density` | 8.6 |
+| Clustering below the window (cable roots) | −13% (default), −23% (`--pool_radius 0.1`), −19% with the correction; −53% at 500/m² | `density` | 8.6 |
 
 ## 9. What was not simulated, and a calibration and validation protocol
 
@@ -645,14 +787,18 @@ The synthetic validation uses the same beam, stem and return models as the corre
 consistency, not the physical models. In particular, it did not include:
 
 * Range noise and SLAM pose error (typically 1–3 cm, larger than the 1 cm stems, the 6–7 mm convention difference
-  and the 1.5 cm trunk removal margin). The generator's rays are exact.
+  and the 1.5 cm trunk removal margin), except one test: the generator now has `--range_noise` and `--pose_noise`,
+  and 1 cm range noise or 2 cm pose noise at 300 stems/m² changed `density` by at most 2% (Table 9). Larger
+  errors, their effect on trunk removal and other scanners' error models are untested.
 * Mixed stem and ground returns at the stem base, and imperfect ground classification: the ground is flat (except
   for the slope test) and perfectly labelled, yet the main layer is 0–0.1 m.
 * Stem taper, lean, curvature, branching, and a distribution of diameters (only one diameter was generated; the
   diameter mixture result of Section 7.5 is a model calculation).
 * Reflectance and incidence dependence of the threshold, wet or muddy stems, and the scanner's actual return
   detection (multiple returns, return mode).
-* More than one scan geometry, height distribution, or scanner (Section 8.3).
+* More than a few scan geometries and height distributions (stage 1 added 2 m line spacing, a 2 m scanner height,
+  and stems of one height), or more than one scanner (Section 8.3). Stage 2 of the self-shadowing work runs a wider
+  validation matrix over these factors; it is in progress.
 * Real stem tops (the generator's tops are a modelling choice, Section 8.2).
 * Water, debris, seedlings, crabs and other non-stem returns in the stem layer.
 
@@ -694,24 +840,52 @@ chain on independent data of known N d.
 voxels (`--pixel_width 0.05` / `--voxel 0.05`), 1 × 1 × 0.1 m cells, the default `--pool_radius 0.05`,
 `--stem_diameter` the measured mean diameter at the heights analysed, `--footprint w0,divergence,threshold` with the
 threshold calibrated (Section 9.2), `--return_range surface`, and `--min_gap` from the field. Use `density` as the
-estimate, keeping in mind its high bias (Section 8.1); use cells with `observed_fraction` of at least about 0.9;
-treat a `patchiness_ratio` above about 1.3 in the lowest 0.2 m as patchiness within the cell (`pooled_density` is
-then unusable, and `density` may read low if stems are clustered below the window); treat layers near the stem tops
-as convention-dependent.
+estimate; use cells with `observed_fraction` of at least 0.9 (mask the others, Section 8.3); treat a
+`patchiness_ratio` above about 1.3 in the lowest 0.2 m as patchiness within the cell (`pooled_density` is then
+unusable, and `density` may read low if stems are clustered below the window); treat layers near the stem tops as
+convention-dependent.
+
+**Self-shadow correction.** Without `--self_shadow_correction`, `density` reads high by about c d_eff/W
+(c = 0.4732; Section 8.1), +6–9% for random stems at these settings. Add it for fairly uniform stands: where the
+cells used are at least 0.9 observed and the `patchiness_ratio` of a run without the correction is close to that of
+random stems (1.03–1.09 in the lowest 0.2 m). Leave it off where `patchiness_ratio` is high (patches, cable roots), as the
+correction then makes `density` read low (0.92–0.96 in patches, 0.81 along cable roots), and below an observed
+fraction of 0.9, where it reads 4–17% low. It applies to a whole run: don't choose between corrected and
+uncorrected values cell by cell, which is right only by the cancellation described in Section 8.1. Report which
+was used (`raydensity` records it in the store's `.zattrs`).
 
 **Workflow.**
 
 1. Import the cloud with its trajectory (`rayimport`), so each point has its sensor origin.
-2. Extract a ground mesh (`rayextract terrain`) and set ground returns to zero alpha, so they count as unobstructed
-   rays (for example by splitting returns near the mesh with `raysplit`, setting their alpha to zero with
-   `raycolour ... alpha`, and recombining with `raycombine`; this step is not covered by the simulation).
+2. Extract a ground mesh and set ground returns to zero alpha, so they count as unobstructed rays:
+
+   ```console
+   raydecimate cloud.ply 3 cm                                  # cloud_decimated.ply, for a lighter mesh
+   rayextract terrain cloud_decimated.ply                      # cloud_decimated_mesh.ply
+   raysplit cloud.ply cloud_decimated_mesh.ply distance 0.005  # cloud_inside.ply: ends > 5 mm above the mesh
+   raycolour cloud_outside.ply alpha 0                         # cloud_outside_coloured.ply: the rest, as misses
+   raycombine all cloud_inside.ply cloud_outside_coloured.ply --output cloud_no_ground.ply
+   ```
+
+   `raysplit` puts every ray whose end is more than the distance above the mesh in `cloud_inside.ply`, and the
+   rest (ends below the mesh, within the distance of it, or beyond its extent) in `cloud_outside.ply`. This was
+   checked on one synthetic scene only (`raycreate pneumatophores 101 --stems_per_m2 300 --footprint
+   0.01,0.003,0.05 --plot_width 4 --rays 900000 --ground_returns`, flat noise-free ground): it removed every ground
+   return, and the layers above 0.1 m were unchanged, but stem returns near the ground are removed with them, so the
+   lowest 0.1 m read 0.954 of the truth against 1.062 with perfectly labelled ground (8.8% of its stem returns
+   lost). A larger distance loses more (0.912 at 1 cm, 0.818 at 2 cm); keeping the ground returns read 2.84.
+   Decimating first matters for speed: with the mesh of the full cloud (308 000 triangles, against 155 000),
+   `raysplit` had not finished on the 0.9 M rays after 4 minutes, against 32 s with the mesh of the 3 cm decimated
+   cloud. On real ground (rough, sloping, wet, with range noise) the distance must exceed the noise, and the loss at
+   the stem bases will be larger: check it on the known-N d array of Section 9.2.
 3. Detect trunks above the pneumatophore layer (a circle fit per cluster, or `rayextract trunks`), extrapolate them
    to the ground, and set returns within each trunk's outline plus a margin larger than the range noise to zero
    alpha.
 4. Split into tiles and estimate (`scripts/raydensity_tiles.sh`, which runs `raysplit ... tiles` and `raydensity`
    per tile, with `--ground` for heights above the mesh), writing one Zarr store; see
    [`large_scale_density.md`](large_scale_density.md). For a plot, `rayrender ... density --cells` does the same.
-5. Check `observed_fraction`, `patchiness_ratio` and the saturation warnings.
+5. Check `observed_fraction` (mask cells below 0.9), `patchiness_ratio` and the saturation warnings, and decide on
+   `--self_shadow_correction` as above.
 6. Add each trunk's frontal area D·Δz/V to its cell(s), with D corrected for the footprint if needed, and multiply
    the pneumatophore density by the cell's free area fraction.
 7. Validate against quadrats (Section 9.2).
@@ -726,36 +900,59 @@ as convention-dependent.
 | (7) | Crossing extension | `raylib/raydensitygrid.cpp`: `DensityGrid::calculateDensities` |
 | (9) | Response R and its inversion | `raylib/raystemmodel.cpp`: `freePathResponse`, `StemResponseTable`, `invertStemResponse`; `raylib/raystemmodel.h`: `invertDensityResponse`; `raylib/raystemresponsetable.h` |
 | (10) | Cell outputs | `raylib/raydensitygrid.h`: `DensityCell`; `raylib/raydensitygrid.cpp`: `aggregateDensityCells`; `raylib/rayrenderer.cpp`: `writeDensityCells`, `writeDensityProfile`; `raylib/raydensity.cpp`: `estimateDensityTile` |
+| (11), (12) | Mean exit distance; self-shadow correction | `raylib/raystemmodel.cpp`: `meanExitDistance`; `raylib/raydensitygrid.cpp`: `applyOverlapCorrection`; `raylib/raydensitygrid.h`: `DensityOptions::self_shadow_correction` |
 | — | Neighbour top-up, observed voxels | `raylib/raydensitygrid.cpp`: `addNeighbourPriors`, `estimateDensityGrid` |
 | — | Synthetic scenes | `raylib/raypneumatophoregen.cpp`: `PneumatophoreGen::generate`, `castRay` |
 
 ## 12. Reproducibility
 
-All scenes are `raycreate pneumatophores <seed> <scene options> --footprint 0.01,0.003,0.05 --truth_cells 1,1,0.1`,
-and all estimates `rayrender pneumatophores.ply top density --density_model vertical_cylinder --estimator pooled
---no_flat_top --pixel_width 0.05 --min_bound -3,-3,0 --max_bound 3,3,<0.1 × layers> --cells cells.csv
---footprint 0.01,0.003,0.05 --stem_diameter 0.01 <variant options>`, compared with `pneumatophores_truth_cells.csv`
-by summing the 36 cells of each 0.1 m layer, as in `scripts/pneumatophore_seed_study.py`.
+The scripts are in `scripts/`. The Python ones need the raycloudtools tools on the PATH (or a build's tool
+directories given with `--bin`) and numpy, and write into the current directory or `--out`; the C++ programs build
+against raylib as described in their headers. Unless stated, scenes are `raycreate pneumatophores <seed> <scene
+options> --footprint 0.01,0.003,0.05 --truth_cells 1,1,0.1`, and estimates `rayrender pneumatophores.ply top density
+--density_model vertical_cylinder --estimator pooled --no_flat_top --pixel_width 0.05 --min_bound -3,-3,0
+--max_bound 3,3,<0.1 × layers> --cells cells.csv --footprint 0.01,0.003,0.05 --stem_diameter 0.01 <variant
+options>`, compared with `pneumatophores_truth_cells.csv` by summing the 36 cells of each 0.1 m layer.
+`scripts/pneumatophore_report_study.py` does this for lists of scenes and variants, generating each scene once per
+seed and estimating it with every variant; for example, Table 2:
+
+```console
+scripts/pneumatophore_report_study.py --out table2 --layers 2 --seeds 4 \
+  --scene "random 30/m2=--stems_per_m2 30" --scene "random 100/m2=--stems_per_m2 100" \
+  --scene "random 300/m2=--stems_per_m2 300" --scene "random 600/m2=--stems_per_m2 600" \
+  --scene "random 1000/m2=--stems_per_m2 1000" --scene "random 1500/m2=--stems_per_m2 1500" \
+  --variant "pooled corrected=" --variant "pooled uncorrected=--no_overlap_correction" \
+  --variant "crossing=--estimator crossing" --variant "beer_lambert=--estimator beer_lambert --no_overlap_correction"
+```
+
+In the table, "study" is `scripts/pneumatophore_report_study.py` and "none" the variant with no extra options.
 
 | Result | Seeds | Produced by |
 |---|---|---|
 | Table 1 | 101–108 | `scripts/pneumatophore_seed_study.py --seeds 8` (and `--extra "--pool_radius 0.1"`) |
-| Table 2, Section 5 (correction effect) | 101–104 | scenes `--stems_per_m2 30/100/300/600/1000/1500`; variants: none, `--no_overlap_correction`, `--estimator crossing`, `--estimator beer_lambert --no_overlap_correction` |
-| Table 3 | 101–104 (0.3 m patches: Table 1 run) | scenes `--stems_per_m2 300 --patchy 0.5,0.3,0`, `--patchy 0.2,0.3,0`, `--stems_per_m2 150 --clustered --cluster_spread 0.03`; variants: none, `--pool_radius 0.1`, `--no_overlap_correction`. Profile layers: `scripts/pneumatophore_validation_plots.py` (seed 11) |
-| Section 7.4, angles | 101–104 | scenes 300, 1000; variants: none, `--min_sin_zenith 0.9`, 4 layers |
-| Section 7.4, ray count | 101 | scene 300 with `--rays 500000`, default, `--rays 8000000` |
-| Table 4 | 101–104 | variants `--footprint 0.01,0.003,0.02 / 0.05 / 0.15` |
-| Table 5 | 101 | variants `--stem_diameter 0.008 / 0.012` |
-| Table 6 | 101–104 | scenes with `--min_gap 0.5`, `--min_gap 1`; variants `--min_gap 0` and the true gap |
-| Return convention, Section 7.6 | 101–104 | scenes and variants `--return_range surface / outline` |
-| Table 7 | 101–104 | variants `--pixel_width 0.025 / 0.05 / 0.1` |
-| Beam, Section 7.6 | 101–104 | variant `--footprint 0,0,0.05` (with and without `--no_overlap_correction`); scenes and estimate with `--footprint 0.001,0.0001,0.05` |
-| Section 7.7, tiling and slope | 101–104 (tiling: 101) | `raydensity` on each scene and on it sheared by z += 0.1 x − 0.05 y, with `--ground` (a plane mesh), absolute, or flattened with `raytranslate subtract`; `scripts/raydensity_tiles.sh` with 2 m tiles |
-| Section 7.8 | 31–34 | `scripts/pneumatophore_trunk_study.py --seed <s>`; trunks alone: `raycreate ... --stems_per_m2 0.01 --trunks 0.1,0.2` |
-| Section 8.2 table, Section 8.5 (5 cm layers) | 101 | scenes 300 and 1000, `--return_range surface / outline`, layers to 0.5 m; `--cell_size 6,6,0.05` |
-| Uniform 0.6 m stems (Sections 8.2, 8.3) | 101 | a small program setting `PneumatophoreParams::mean_height = 0.6`, `height_sd = 0` (raycreate has no height option) |
-| Section 5, response accuracy | 6 Monte Carlo seeds | `ray::freePathResponse` with other seeds, and against `StemResponseTable::response` |
+| Table 2, Section 5 (correction effect) | 101–104 | study `--layers 2`, as above |
+| Table 3 | 101–104 (0.3 m patches: Table 1 run) | study; scenes `--stems_per_m2 300 --patchy 0.5,0.3,0`, `--stems_per_m2 300 --patchy 0.2,0.3,0`, `--stems_per_m2 150 --clustered --cluster_spread 0.03`; variants none, `--pool_radius 0.1`, `--no_overlap_correction`. Profile layers: `scripts/pneumatophore_validation_plots.py` (seed 11) |
+| Section 7.4, angles | 101–104 | study `--layers 4`; scenes 300 and 1000 stems/m²; variants none, `--min_sin_zenith 0.9` |
+| Section 7.4, ray count | 101 | study `--seeds 1`; scenes `--stems_per_m2 300` with `--rays 500000`, the default and `--rays 8000000` |
+| Table 4 | 101–104 | study `--layers 2`; scenes 100, 300, 1000 stems/m²; variants `--footprint 0.01,0.003,0.02 / 0.05 / 0.15` |
+| Table 5 | 101 | study `--seeds 1`; variants `--stem_diameter 0.008 / 0.012` |
+| Table 6 | 101–104 | study `--layers 2`; scenes 100, 300, 1000 stems/m² with `--min_gap 0.5` or `--min_gap 1`; variants `--min_gap 0` and the true gap |
+| Return convention, Section 7.6 | 101–104 | study `--layers 2`; scenes and variants `--return_range surface / outline` |
+| Table 7 | 101–104 | study; variants `--pixel_width 0.025 / 0.05 / 0.1` |
+| Beam, Section 7.6 | 101–104 | study; variant `--footprint 0,0,0.05` (with and without `--no_overlap_correction`); scenes and variant `--footprint 0.001,0.0001,0.05` |
+| Section 7.7, tiling and slope | 101–104 (tiling: 101) | `scripts/pneumatophore_slope_tiles_study.py --seeds 4` (it runs `scripts/raydensity_tiles.sh` for the tiling) |
+| Section 7.8 | 31–34 | `scripts/pneumatophore_trunk_study.py --seed <s>` (and `--pooled`) in `seed_<s>`, aggregated with `scripts/pneumatophore_trunk_aggregate.py`; trunks alone: `scripts/pneumatophore_trunk_only_study.py` |
+| Section 8.2 table, uniform 0.6 m stems | 101 | study `--seeds 1 --layers 5`; scenes 300 and 1000 stems/m² with `--return_range surface / outline`, and with `--height 0.6,0` for stems of one height (see below) |
+| Section 8.5, 5 cm layers | 101 | the Section 8.2 scenes, estimated as above with `--max_bound 3,3,0.5 --cell_size 6,6,0.05` |
+| Section 5, response accuracy | 6 Monte Carlo seeds | `scripts/pneumatophore_response_noise.cpp` |
+| Section 8.1 (Tables 8 and 9; stage-2 candidate), Sections 6, 8.3 and 9.1 (stage-1 values) | 101–104 | `scripts/pneumatophore_self_shadow_study.py --sets all --seeds 101,102,103,104` (4 m plots); quarter rays: `--sets rays --rays_per_m 14062` |
+| Section 8.1, 2D Monte Carlo | 3 per configuration (6 for one) | `scripts/pneumatophore_self_shadow_mc2d.cpp` (key–value arguments, e.g. `N 300 d 0.01 deff 0.0234 D 0.22 w 0.05 k 1`) |
+| Table 10 and the remedies of Section 8.3 | 101 (and 102 at 1000 and 1500 stems/m²) | `scripts/pneumatophore_low_observation_study.py` |
+| Section 10, ground removal | 101 | the commands of step 2 on `raycreate pneumatophores 101 --stems_per_m2 300 --footprint 0.01,0.003,0.05 --plot_width 4 --rays 900000 --truth_cells 1,1,0.1 --ground_returns`, estimated over `--min_bound -2,-2,0 --max_bound 2,2,0.3`, against the same scene without `--ground_returns` |
 
-The multi-variant runs above used a driver equivalent to `scripts/pneumatophore_seed_study.py` (generate once per
-seed, estimate with each variant), which is not part of the repository. Plot totals are deterministic for a seed,
-so the numbers are reproducible exactly with the same build.
+The uniform 0.6 m scenes quoted in Section 8.2 were made with a small program before `raycreate` had `--height`.
+`--height 0.6,0` gives the same stem positions and truth below 0.5 m, but not a bit-identical scan (at 1000
+stems/m² the number of stem hits differs by 32 of 1.58 M), and layer values within 0.002 of those quoted. Plot totals are deterministic for a seed, so
+the numbers are reproducible exactly with the same build. Run with one seed, the scripts reproduced their earlier
+outputs exactly (the Table 2 cells at 300 stems/m², the slope and tiling comparison, trunks alone, the response
+accuracy and the 300 stems/m² rows of Table 10's analysis).
