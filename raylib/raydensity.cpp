@@ -6,6 +6,7 @@
 #include "raymesh.h"
 #include "rayply.h"
 
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -16,6 +17,11 @@
 #include <iostream>
 #include <limits>
 #include <sstream>
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace ray
 {
@@ -63,34 +69,49 @@ std::string jsonString(const std::string &text)
   ss << "\"";
   return ss.str();
 }
+
+long processId()
+{
+#if defined(_WIN32)
+  return static_cast<long>(_getpid());
+#else
+  return static_cast<long>(getpid());
+#endif
+}
 }  // namespace
 
 bool ZarrStore::writeFile(const std::string &file_name, const char *data, size_t size) const
 {
-  // write to a uniquely named temporary file, then rename, so that concurrent writers don't conflict
-  static int counter = 0;
+  // write to a temporary file unique to this process and call, then rename (atomic on POSIX file systems), so that
+  // concurrent writers don't conflict and readers never see a partial file
+  static std::atomic<unsigned long> counter(0);
   std::stringstream tmp;
-  tmp << file_name << ".tmp" << reinterpret_cast<uintptr_t>(this) << "_" << counter++ << "_"
-      << std::hash<std::string>()(file_name);
+  tmp << file_name << ".tmp." << processId() << "." << counter++;
+  const std::string tmp_name = tmp.str();
+  bool ok;
   {
-    std::ofstream ofs(tmp.str(), std::ios::binary | std::ios::out);
+    std::ofstream ofs(tmp_name, std::ios::binary | std::ios::out);
     if (!ofs.is_open())
     {
-      std::cerr << "Error: cannot write " << tmp.str() << std::endl;
+      std::cerr << "Error: cannot write " << tmp_name << std::endl;
       return false;
     }
     ofs.write(data, static_cast<std::streamsize>(size));
-    if (!ofs.good())
-    {
-      std::cerr << "Error: failed to write " << tmp.str() << std::endl;
-      return false;
-    }
+    ofs.close();
+    ok = !ofs.fail();
   }
   std::error_code error;
-  std::filesystem::rename(tmp.str(), file_name, error);
+  if (!ok)
+  {
+    std::cerr << "Error: failed to write " << tmp_name << std::endl;
+    std::filesystem::remove(tmp_name, error);
+    return false;
+  }
+  std::filesystem::rename(tmp_name, file_name, error);
   if (error)
   {
-    std::cerr << "Error: cannot rename " << tmp.str() << " to " << file_name << ": " << error.message() << std::endl;
+    std::cerr << "Error: cannot rename " << tmp_name << " to " << file_name << ": " << error.message() << std::endl;
+    std::filesystem::remove(tmp_name, error);
     return false;
   }
   return true;
@@ -107,15 +128,21 @@ bool ZarrStore::writeGroup(const std::string &attributes) const
 }
 
 bool ZarrStore::writeArray(const std::string &name, const std::vector<int> &shape, const std::vector<int> &chunks,
-                           const std::vector<std::string> &dimensions, const std::string &attributes) const
+                           const std::vector<std::string> &dimensions, const std::string &attributes,
+                           const std::string &dtype) const
 {
+  if (dtype != "<f4" && dtype != "<f8")
+  {
+    std::cerr << "Error: unsupported Zarr dtype " << dtype << std::endl;
+    return false;
+  }
   const std::string dir = path_ + "/" + name;
   std::error_code error;
   std::filesystem::create_directories(dir, error);
   std::stringstream zarray;
-  zarray << "{\n  \"chunks\": " << jsonList(chunks) << ",\n  \"compressor\": null,\n  \"dtype\": \"<f4\",\n"
-         << "  \"fill_value\": \"NaN\",\n  \"filters\": null,\n  \"order\": \"C\",\n  \"shape\": " << jsonList(shape)
-         << ",\n  \"zarr_format\": 2\n}\n";
+  zarray << "{\n  \"chunks\": " << jsonList(chunks) << ",\n  \"compressor\": null,\n  \"dtype\": \"" << dtype
+         << "\",\n  \"fill_value\": \"NaN\",\n  \"filters\": null,\n  \"order\": \"C\",\n  \"shape\": "
+         << jsonList(shape) << ",\n  \"zarr_format\": 2\n}\n";
   std::stringstream zattrs;
   zattrs << "{\n  \"_ARRAY_DIMENSIONS\": [";
   for (size_t i = 0; i < dimensions.size(); i++)
@@ -127,8 +154,8 @@ bool ZarrStore::writeArray(const std::string &name, const std::vector<int> &shap
   return writeFile(dir + "/.zarray", a.data(), a.size()) && writeFile(dir + "/.zattrs", b.data(), b.size());
 }
 
-bool ZarrStore::writeChunk(const std::string &name, const std::vector<int> &chunk_index,
-                           const std::vector<float> &data) const
+bool ZarrStore::writeChunkData(const std::string &name, const std::vector<int> &chunk_index, const char *data,
+                               size_t size) const
 {
   if (!isLittleEndian())
   {
@@ -140,14 +167,52 @@ bool ZarrStore::writeChunk(const std::string &name, const std::vector<int> &chun
   {
     key << (i > 0 ? "." : "") << chunk_index[i];
   }
-  return writeFile(path_ + "/" + name + "/" + key.str(), reinterpret_cast<const char *>(data.data()),
-                   data.size() * sizeof(float));
+  return writeFile(path_ + "/" + name + "/" + key.str(), data, size);
+}
+
+bool ZarrStore::writeChunk(const std::string &name, const std::vector<int> &chunk_index,
+                           const std::vector<float> &data) const
+{
+  return writeChunkData(name, chunk_index, reinterpret_cast<const char *>(data.data()), data.size() * sizeof(float));
+}
+
+bool ZarrStore::writeChunk(const std::string &name, const std::vector<int> &chunk_index,
+                           const std::vector<double> &data) const
+{
+  return writeChunkData(name, chunk_index, reinterpret_cast<const char *>(data.data()), data.size() * sizeof(double));
 }
 
 bool ZarrStore::write1D(const std::string &name, const std::vector<float> &data, const std::string &attributes) const
 {
   const int size = static_cast<int>(data.size());
-  return writeArray(name, { size }, { size }, { name }, attributes) && writeChunk(name, { 0 }, data);
+  return writeArray(name, { size }, { size }, { name }, attributes, "<f4") && writeChunk(name, { 0 }, data);
+}
+
+bool ZarrStore::write1D(const std::string &name, const std::vector<double> &data, const std::string &attributes) const
+{
+  const int size = static_cast<int>(data.size());
+  return writeArray(name, { size }, { size }, { name }, attributes, "<f8") && writeChunk(name, { 0 }, data);
+}
+
+bool ZarrStore::writeText(const std::string &relative_path, const std::string &text) const
+{
+  const std::filesystem::path file = std::filesystem::path(path_) / relative_path;
+  std::error_code error;
+  std::filesystem::create_directories(file.parent_path(), error);
+  return writeFile(file.string(), text.data(), text.size());
+}
+
+bool ZarrStore::readText(const std::string &relative_path, std::string &text) const
+{
+  std::ifstream ifs(path_ + "/" + relative_path, std::ios::binary | std::ios::in);
+  if (!ifs.is_open())
+  {
+    return false;
+  }
+  std::stringstream ss;
+  ss << ifs.rdbuf();
+  text = ss.str();
+  return true;
 }
 
 namespace
@@ -158,6 +223,44 @@ bool multipleOf(double x, double unit, int &multiple)
   const double ratio = x / unit;
   multiple = static_cast<int>(std::round(ratio));
   return multiple > 0 && std::abs(ratio - multiple) < 1e-6 * std::max(1.0, ratio);
+}
+
+const char *estimatorName(PathEstimator estimator)
+{
+  switch (estimator)
+  {
+  case PathEstimator::BeerLambert:
+    return "beer_lambert";
+  case PathEstimator::Crossing:
+    return "crossing";
+  case PathEstimator::PooledBeerLambert:
+    return "pooled";
+  }
+  return "unknown";
+}
+
+/// Removes the triangles whose horizontal bounds don't overlap the box [box_min, box_max] in x and y, so that
+/// Mesh::toHeightField only bins the triangles near the tile, rather than those of the whole domain
+void cropMesh(Mesh &mesh, const Eigen::Vector2d &box_min, const Eigen::Vector2d &box_max)
+{
+  const std::vector<Eigen::Vector3d> &vertices = mesh.vertices();
+  std::vector<Eigen::Vector3i> &triangles = mesh.indexList();
+  size_t kept = 0;
+  for (const Eigen::Vector3i &triangle : triangles)
+  {
+    Eigen::Vector2d tri_min = vertices[static_cast<size_t>(triangle[0])].head<2>(), tri_max = tri_min;
+    for (int j = 1; j < 3; j++)
+    {
+      const Eigen::Vector2d v = vertices[static_cast<size_t>(triangle[j])].head<2>();
+      tri_min = tri_min.cwiseMin(v);
+      tri_max = tri_max.cwiseMax(v);
+    }
+    if ((tri_max.array() >= box_min.array()).all() && (tri_min.array() <= box_max.array()).all())
+    {
+      triangles[kept++] = triangle;
+    }
+  }
+  triangles.resize(kept);
 }
 }  // namespace
 
@@ -175,18 +278,136 @@ bool estimateDensityTile(const std::string &cloud_file, const DensityTileParams 
               << std::endl;
     return false;
   }
-  if ((params.tile.array() < 0).any() || (params.tile.array() >= params.num_tiles.array()).any())
+  if ((params.num_tiles.array() < 1).any() || (params.tile.array() < 0).any() ||
+      (params.tile.array() >= params.num_tiles.array()).any())
   {
     std::cerr << "Error: tile " << params.tile.transpose() << " is outside the domain of "
               << params.num_tiles.transpose() << " tiles" << std::endl;
     return false;
   }
-  const double halo = params.halo >= 0.0 ? params.halo : params.options.pool_radius + 2.0 * w;
+  // the halo must cover the pooled neighbourhood and the neighbour prior of the tile's edge voxels, for the tile to
+  // match a single run over the whole domain
+  const double min_halo = params.options.pool_radius + 2.0 * w;
+  if (params.halo >= 0.0 && params.halo < min_halo - 1e-6 * w)
+  {
+    std::cerr << "Error: the halo " << params.halo << " m is less than the pool radius plus two voxel widths ("
+              << min_halo << " m), so the tile would not match a single run over the domain" << std::endl;
+    return false;
+  }
+  const double halo = params.halo >= 0.0 ? params.halo : min_halo;
   const int halo_voxels = static_cast<int>(std::ceil(halo / w - 1e-9));
   const int nx = tile_voxels + 2 * halo_voxels;
   const Eigen::Vector2d core_min(params.origin[0] + params.tile[0] * params.tile_width,
                                  params.origin[1] + params.tile[1] * params.tile_width);
   const Eigen::Vector2d grid_min = core_min - Eigen::Vector2d(halo_voxels * w, halo_voxels * w);
+  const bool cylinders = params.options.distribution == ElementDistribution::VerticalCylinder;
+  const double d = params.options.stem_diameter;
+  const bool write_solid = cylinders && d > 0.0;
+
+  // the store's metadata, identical for every tile of the domain (per-tile information goes in tiles/i_j.json)
+  const ZarrStore store(store_path);
+  const int shape_x = cells_x * params.num_tiles[0], shape_y = cells_y * params.num_tiles[1];
+  std::stringstream attrs;
+  attrs << std::setprecision(15);
+  attrs << "  \"title\": \"raycloudtools raydensity\",\n"
+        << "  \"quantity\": "
+        << jsonString(cylinders ? "frontal area per volume N d (m^-1)" : "leaf area per volume (m^-1)")
+        << ",\n  \"density_model\": " << jsonString(cylinders ? "vertical_cylinder" : "spherical")
+        << ",\n  \"origin\": [" << params.origin[0] << ", " << params.origin[1] << "],\n"
+        << "  \"tile_width\": " << params.tile_width << ",\n  \"num_tiles\": [" << params.num_tiles[0] << ", "
+        << params.num_tiles[1] << "],\n  \"voxel_width\": " << w << ",\n  \"cell_size\": [" << params.cell_size[0]
+        << ", " << params.cell_size[1] << ", " << params.cell_size[2] << "],\n  \"height_range\": ["
+        << params.min_height << ", " << params.max_height
+        << "],\n  \"heights_above_ground\": " << (params.ground_mesh_file.empty() ? "false" : "true")
+        << ",\n  \"voxels\": " << (params.write_voxels ? "true" : "false") << ",\n  \"stem_diameter\": " << d
+        << ",\n  \"footprint\": [" << params.options.footprint.exit_diameter << ", "
+        << params.options.footprint.divergence << ", " << params.options.footprint.threshold
+        << "],\n  \"return_range\": " << (params.options.footprint.range_to_outline ? "\"outline\"" : "\"surface\"")
+        << ",\n  \"estimator\": " << jsonString(estimatorName(params.options.path_estimator))
+        << ",\n  \"pool_radius\": " << params.options.pool_radius
+        << ",\n  \"min_gap_ratio\": " << params.options.min_gap_ratio
+        << ",\n  \"min_sin_zenith\": " << params.options.min_sin_zenith
+        << ",\n  \"max_sin_zenith\": " << params.options.max_sin_zenith
+        << ",\n  \"occlusion_correction\": " << (params.options.overlap_correction ? "true" : "false")
+        << ",\n  \"flat_top_compensation\": " << (params.options.flat_top_compensation ? "true" : "false");
+  const std::string group_attrs = "{\n" + attrs.str() + "\n}\n";
+  std::string existing;
+  if (store.readText(".zattrs", existing) && existing != group_attrs)
+  {
+    std::cerr << "Error: the store " << store_path
+              << " was written with different parameters (see its .zattrs). Use the same domain and options for "
+                 "every tile, or a new store"
+              << std::endl;
+    return false;
+  }
+  const std::vector<int> shape = { cells_z, shape_y, shape_x }, chunks = { cells_z, cells_y, cells_x };
+  const std::vector<std::string> dims = { "z", "y", "x" };
+  const std::vector<int> chunk_index = { 0, params.tile[1], params.tile[0] };
+  struct Output
+  {
+    std::string name;
+    std::string description;
+    std::vector<float> data;
+  };
+  std::vector<Output> outputs = {
+    { "density", "mean of the observed voxel densities in the cell", {} },
+    { "single_voxel_density", "total hits / total weighted path length, as if the cell were one voxel", {} },
+    { "hits", "sum of (corrected) hits over the observed voxels", {} },
+    { "weighted_path", "sum of the G-weighted path lengths (m) over the observed voxels", {} },
+    { "observed_fraction", "fraction of the cell's voxels with enough rays for an estimate", {} }
+  };
+  if (write_solid)
+  {
+    outputs.push_back({ "solid_fraction", "N pi d^2 / 4, the fraction of the ground area occupied by stems", {} });
+  }
+  // coordinates in float64, as float32 can't resolve cells or voxels at georeferenced (e.g. UTM) coordinates
+  std::vector<double> xs(static_cast<size_t>(shape_x)), ys(static_cast<size_t>(shape_y)),
+    zs(static_cast<size_t>(cells_z));
+  for (int i = 0; i < shape_x; i++)
+  {
+    xs[static_cast<size_t>(i)] = params.origin[0] + (i + 0.5) * params.cell_size[0];
+  }
+  for (int i = 0; i < shape_y; i++)
+  {
+    ys[static_cast<size_t>(i)] = params.origin[1] + (i + 0.5) * params.cell_size[1];
+  }
+  for (int i = 0; i < cells_z; i++)
+  {
+    zs[static_cast<size_t>(i)] = params.min_height + (i + 0.5) * params.cell_size[2];
+  }
+  bool ok = store.writeGroup(attrs.str()) && store.write1D("x", xs, "  \"units\": \"m\"") &&
+            store.write1D("y", ys, "  \"units\": \"m\"") &&
+            store.write1D("z", zs, "  \"units\": \"m\", \"long_name\": \"cell centre height\"");
+  for (const auto &output : outputs)
+  {
+    ok =
+      ok && store.writeArray(output.name, shape, chunks, dims, "  \"description\": " + jsonString(output.description));
+  }
+  const int vx = tile_voxels * params.num_tiles[0], vy = tile_voxels * params.num_tiles[1];
+  if (ok && params.write_voxels)
+  {
+    std::vector<double> xv(static_cast<size_t>(vx)), yv(static_cast<size_t>(vy)), zv(static_cast<size_t>(voxels_z));
+    for (int i = 0; i < vx; i++)
+    {
+      xv[static_cast<size_t>(i)] = params.origin[0] + (i + 0.5) * w;
+    }
+    for (int i = 0; i < vy; i++)
+    {
+      yv[static_cast<size_t>(i)] = params.origin[1] + (i + 0.5) * w;
+    }
+    for (int i = 0; i < voxels_z; i++)
+    {
+      zv[static_cast<size_t>(i)] = params.min_height + (i + 0.5) * w;
+    }
+    ok = store.write1D("xv", xv, "  \"units\": \"m\"") && store.write1D("yv", yv, "  \"units\": \"m\"") &&
+         store.write1D("zv", zv, "  \"units\": \"m\", \"long_name\": \"voxel centre height\"") &&
+         store.writeArray("voxel_density", { voxels_z, vy, vx }, { voxels_z, tile_voxels, tile_voxels },
+                          { "zv", "yv", "xv" }, "  \"description\": \"voxel density, NaN where unobserved\"");
+  }
+  if (!ok)
+  {
+    return false;
+  }
 
   // ground height at each voxel column centre
   std::vector<double> ground(static_cast<size_t>(nx * nx), 0.0);
@@ -197,9 +418,15 @@ bool estimateDensityTile(const std::string &cloud_file, const DensityTileParams 
     {
       return false;
     }
-    Eigen::ArrayXXd field;
     const Eigen::Vector3d box_min(grid_min[0], grid_min[1], -1e6);
     const Eigen::Vector3d box_max(grid_min[0] + nx * w, grid_min[1] + nx * w, 1e6);
+    cropMesh(mesh, box_min.head<2>(), box_max.head<2>());
+    if (mesh.indexList().empty())
+    {
+      std::cerr << "Error: the ground mesh doesn't cover tile " << params.tile.transpose() << std::endl;
+      return false;
+    }
+    Eigen::ArrayXXd field;
     mesh.toHeightField(field, box_min, box_max, w);
     double sum = 0.0;
     int count = 0;
@@ -297,10 +524,14 @@ bool estimateDensityTile(const std::string &cloud_file, const DensityTileParams 
 
   // chunk data in (z, y, x) C order
   const float nan = std::numeric_limits<float>::quiet_NaN();
-  const bool cylinders = params.options.distribution == ElementDistribution::VerticalCylinder;
-  const double d = params.options.stem_diameter;
-  std::vector<float> density(num_cells, nan), single(num_cells, nan), hits_out(num_cells), path_out(num_cells),
-    observed_fraction(num_cells, 0.0f), solid(num_cells, nan);
+  std::vector<float> &density = outputs[0].data, &single = outputs[1].data, &hits_out = outputs[2].data,
+                     &path_out = outputs[3].data, &observed_fraction = outputs[4].data;
+  density.assign(num_cells, nan);
+  single.assign(num_cells, nan);
+  hits_out.assign(num_cells, 0.0f);
+  path_out.assign(num_cells, 0.0f);
+  observed_fraction.assign(num_cells, 0.0f);
+  std::vector<float> solid(num_cells, nan);
   for (int z = 0; z < cells_z; z++)
   {
     for (int y = 0; y < cells_y; y++)
@@ -317,7 +548,7 @@ bool estimateDensityTile(const std::string &cloud_file, const DensityTileParams 
         if (observed[c] > 0)
         {
           density[c] = static_cast<float>(sum[c] / observed[c]);
-          if (cylinders && d > 0.0)
+          if (write_solid)
           {
             solid[c] = static_cast<float>(0.25 * kPi * d * density[c]);
           }
@@ -329,92 +560,26 @@ bool estimateDensityTile(const std::string &cloud_file, const DensityTileParams 
       }
     }
   }
+  if (write_solid)
+  {
+    outputs[5].data.swap(solid);
+  }
 
-  // write the metadata (identical for every tile), then this tile's chunks
-  const ZarrStore store(store_path);
-  const int shape_x = cells_x * params.num_tiles[0], shape_y = cells_y * params.num_tiles[1];
-  std::stringstream attrs;
-  attrs << std::setprecision(10);
-  attrs << "  \"title\": \"raycloudtools raydensity\",\n"
-        << "  \"quantity\": "
-        << jsonString(cylinders ? "frontal area per volume N d (m^-1)" : "leaf area per volume (m^-1)")
-        << ",\n  \"origin\": [" << params.origin[0] << ", " << params.origin[1] << "],\n"
-        << "  \"tile_width\": " << params.tile_width << ",\n  \"num_tiles\": [" << params.num_tiles[0] << ", "
-        << params.num_tiles[1] << "],\n  \"voxel_width\": " << w << ",\n  \"cell_size\": [" << params.cell_size[0]
-        << ", " << params.cell_size[1] << ", " << params.cell_size[2] << "],\n  \"height_range\": ["
-        << params.min_height << ", " << params.max_height
-        << "],\n  \"heights_above_ground\": " << (params.ground_mesh_file.empty() ? "false" : "true")
-        << ",\n  \"stem_diameter\": " << d << ",\n  \"footprint\": [" << params.options.footprint.exit_diameter << ", "
-        << params.options.footprint.divergence << ", " << params.options.footprint.threshold
-        << "],\n  \"estimator\": " << static_cast<int>(params.options.path_estimator)
-        << ",\n  \"pool_radius\": " << params.options.pool_radius
-        << ",\n  \"min_gap_ratio\": " << params.options.min_gap_ratio
-        << ",\n  \"occlusion_correction\": " << (params.options.overlap_correction ? "true" : "false")
-        << ",\n  \"description\": " << jsonString(params.description);
-  const std::vector<int> shape = { cells_z, shape_y, shape_x }, chunks = { cells_z, cells_y, cells_x };
-  const std::vector<std::string> dims = { "z", "y", "x" };
-  const std::vector<int> chunk_index = { 0, params.tile[1], params.tile[0] };
-  struct Output
-  {
-    std::string name;
-    const std::vector<float> *data;
-    std::string description;
-  };
-  std::vector<Output> outputs = {
-    { "density", &density, "mean of the observed voxel densities in the cell" },
-    { "single_voxel_density", &single, "total hits / total weighted path length, as if the cell were one voxel" },
-    { "hits", &hits_out, "sum of (corrected) hits over the observed voxels" },
-    { "weighted_path", &path_out, "sum of the G-weighted path lengths (m) over the observed voxels" },
-    { "observed_fraction", &observed_fraction, "fraction of the cell's voxels with enough rays for an estimate" }
-  };
-  if (cylinders && d > 0.0)
-  {
-    outputs.push_back({ "solid_fraction", &solid, "N pi d^2 / 4, the fraction of the ground area occupied by stems" });
-  }
-  bool ok = store.writeGroup(attrs.str());
-  std::vector<float> xs(static_cast<size_t>(shape_x)), ys(static_cast<size_t>(shape_y)),
-    zs(static_cast<size_t>(cells_z));
-  for (int i = 0; i < shape_x; i++)
-  {
-    xs[static_cast<size_t>(i)] = static_cast<float>(params.origin[0] + (i + 0.5) * params.cell_size[0]);
-  }
-  for (int i = 0; i < shape_y; i++)
-  {
-    ys[static_cast<size_t>(i)] = static_cast<float>(params.origin[1] + (i + 0.5) * params.cell_size[1]);
-  }
-  for (int i = 0; i < cells_z; i++)
-  {
-    zs[static_cast<size_t>(i)] = static_cast<float>(params.min_height + (i + 0.5) * params.cell_size[2]);
-  }
-  ok = ok && store.write1D("x", xs, "  \"units\": \"m\"") && store.write1D("y", ys, "  \"units\": \"m\"") &&
-       store.write1D("z", zs, "  \"units\": \"m\", \"long_name\": \"cell centre height\"");
+  // this tile's chunks, then its description
   for (const auto &output : outputs)
   {
-    ok =
-      ok && store.writeArray(output.name, shape, chunks, dims, "  \"description\": " + jsonString(output.description));
-    ok = ok && store.writeChunk(output.name, chunk_index, *output.data);
+    ok = ok && store.writeChunk(output.name, chunk_index, output.data);
   }
   if (params.write_voxels)
   {
-    const int vx = tile_voxels * params.num_tiles[0], vy = tile_voxels * params.num_tiles[1];
-    std::vector<float> xv(static_cast<size_t>(vx)), yv(static_cast<size_t>(vy)), zv(static_cast<size_t>(voxels_z));
-    for (int i = 0; i < vx; i++)
-    {
-      xv[static_cast<size_t>(i)] = static_cast<float>(params.origin[0] + (i + 0.5) * w);
-    }
-    for (int i = 0; i < vy; i++)
-    {
-      yv[static_cast<size_t>(i)] = static_cast<float>(params.origin[1] + (i + 0.5) * w);
-    }
-    for (int i = 0; i < voxels_z; i++)
-    {
-      zv[static_cast<size_t>(i)] = static_cast<float>(params.min_height + (i + 0.5) * w);
-    }
-    ok = ok && store.write1D("xv", xv) && store.write1D("yv", yv) && store.write1D("zv", zv);
-    ok = ok && store.writeArray("voxel_density", { voxels_z, vy, vx }, { voxels_z, tile_voxels, tile_voxels },
-                                { "zv", "yv", "xv" }, "  \"description\": \"voxel density, NaN where unobserved\"");
     ok = ok && store.writeChunk("voxel_density", chunk_index, voxel_out);
   }
+  std::stringstream tile_name, tile_info;
+  tile_name << "tiles/" << params.tile[0] << "_" << params.tile[1] << ".json";
+  tile_info << std::setprecision(15) << "{\n  \"tile\": [" << params.tile[0] << ", " << params.tile[1]
+            << "],\n  \"input\": " << jsonString(cloud_file) << ",\n  \"halo\": " << halo
+            << ",\n  \"description\": " << jsonString(params.description) << "\n}\n";
+  ok = ok && store.writeText(tile_name.str(), tile_info.str());
   if (ok)
   {
     std::cout << "wrote tile " << params.tile.transpose() << " to " << store_path << std::endl;
