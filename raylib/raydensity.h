@@ -65,9 +65,9 @@ struct RAYLIB_EXPORT DensityTileParams
   Eigen::Vector2i num_tiles = Eigen::Vector2i(1, 1);
   /// Rays within this distance outside the tile are included, so that the tile's voxels are estimated exactly as
   /// in a single run over the whole domain. It must be at least pool_radius plus two voxel widths (the pooled
-  /// neighbourhood and the neighbour prior). Negative chooses this minimum. The voxel grid covers the halo rounded up
-  /// to whole voxels, plus one voxel, so the input (e.g. from splitTiles) needs a halo at least 1.5 voxels larger,
-  /// for the ray ends that it clips to lie outside the grid
+  /// neighbourhood and the neighbour prior). Negative chooses this minimum. The input (e.g. from splitTiles) needs at
+  /// least this halo. The voxel grid covers the halo rounded up to whole voxels, plus one voxel, so a halo 1.5 voxels
+  /// larger (as scripts/raydensity_tiles.sh uses) keeps the ray ends that the split clips outside the grid
   double halo = -1.0;
   double voxel_width = 0.05;
   /// The output cells. The tile width must be a multiple of the cell width in x and y, and of the voxel width

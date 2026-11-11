@@ -387,6 +387,17 @@ inline bool DensityGrid::operator()(const Eigen::Vector3i &p, const Eigen::Vecto
   }
   else
   {
+    // A ray that passes exactly through a voxel edge or corner, or ends exactly on a voxel face, is also walked
+    // through a voxel with (close to) zero length. Which of the adjacent voxels that is depends on rounding (e.g. of a
+    // ray end clipped onto a voxel face by raysplit), so counting it as one of the voxel's rays would make the ray
+    // counts differ by one between a tiled and a single run, though the hits and path lengths are the same. The ray
+    // count selects the observed voxels (min_voxel_hits) and the neighbour priors (DENSITY_MIN_RAYS), and gives the
+    // small-sample factor (n-1)/n (which changed two tile edge voxels of the pooled estimator by up to 0.44% before
+    // it dropped the factor). It adds no path, so it isn't counted
+    if (end_length <= in_length + 1e-9)
+    {
+      return false;
+    }
     // end_length, so that rays which end within the voxel without hitting (e.g. zero-alpha ground returns) only
     // count the path length up to their end point
     weighted_length = g * (end_length - in_length) * voxel_width_;

@@ -40,8 +40,8 @@ void usage(int exit_code = 1)
   std::cout << "Defaults differ from rayrender: --density_model vertical_cylinder, --estimator pooled, no flat top model." << std::endl;
   std::cout << "The input should contain every ray crossing the tile and its halo, keeping ray start points, as given by:" << std::endl;
   std::cout << "raysplit cloud.ply tiles 0,0 25 0.225 -1,2 12,12" << std::endl;
-  std::cout << "Its halo must exceed this halo by more than one voxel (the grid has an extra voxel for the neighbour prior)," << std::endl;
-  std::cout << "so that the ray ends it clips lie outside the grid. scripts/raydensity_tiles.sh does both steps." << std::endl;
+  std::cout << "Its halo must be at least this halo. 1.5 voxels more (as above) keeps the ray ends it clips outside the grid" << std::endl;
+  std::cout << "(which has an extra voxel for the neighbour prior). scripts/raydensity_tiles.sh does both steps." << std::endl;
   // clang-format on
   exit(exit_code);
 }
