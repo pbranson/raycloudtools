@@ -7,7 +7,9 @@ and rays), with and without the stem occlusion correction. Requires raycreate an
 Run in an empty working directory.
 
 For each scene and seed, reports estimate / truth summed over the 1 x 1 m cells of each 0.1 m layer, and the
-relative RMSE of the cells; then the mean and standard deviation over seeds.
+relative RMSE of the cells; then the mean and standard deviation over seeds. Both cell estimates are evaluated: the
+density pooled over the cell's voxels (density_..., the main output) and the mean of the voxel densities
+(mean_voxel_density_...), with their ratio (patchiness_ratio, the mean over the layer's cells).
 """
 import argparse
 import concurrent.futures
@@ -18,6 +20,8 @@ import subprocess
 import numpy as np
 
 FOOTPRINT = "0.01,0.003,0.05"
+# the cells file's estimates: pooled over the cell's voxels, and the mean of the voxel densities
+COLUMNS = {"pooled": "density_", "mean": "mean_voxel_density_"}
 SCENES = {"random 100/m2": "--stems_per_m2 100", "random 300/m2": "--stems_per_m2 300",
           "random 1000/m2": "--stems_per_m2 1000", "patches r 0.3 m, 300/m2": "--stems_per_m2 300 --patchy 0.3,0.4,0"}
 
@@ -48,17 +52,19 @@ def one(scene, options, seed, layers, extra_args):
             f"--no_flat_top --stem_diameter 0.01 --footprint {FOOTPRINT} --pixel_width 0.05 --min_bound -3,-3,0 "
             f"--max_bound 3,3,{0.1 * layers:.1f} --cells cells_{name}.csv {extra} {extra_args}", d)
         cells = read_csv(f"{d}/cells_{name}.csv")
-        col = [k for k in cells[0] if k.startswith("mean_density")][0]
-        result = []
-        for z in range(layers):
-            pairs = [(float(c[col]), truth[key(c)]) for c in cells
-                     if abs(float(c["z_min"]) - 0.1 * z) < 1e-6 and key(c) in truth]
-            if not pairs:
-                raise RuntimeError(f"{d}: no estimated cells in layer {z} match the truth cells")
-            e = np.array([p[0] for p in pairs])
-            t = np.array([p[1] for p in pairs])
-            result.append((e.sum() / t.sum(), np.sqrt(np.mean((e - t) ** 2)) / t.mean()))
-        out[name] = result
+        for label, prefix in COLUMNS.items():
+            col = [k for k in cells[0] if k.startswith(prefix)][0]
+            result = []
+            for z in range(layers):
+                layer = [c for c in cells if abs(float(c["z_min"]) - 0.1 * z) < 1e-6 and key(c) in truth]
+                pairs = [(float(c[col]), truth[key(c)]) for c in layer if c[col] != "nan"]
+                if not pairs:
+                    raise RuntimeError(f"{d}: no estimated cells in layer {z} match the truth cells")
+                e = np.array([p[0] for p in pairs])
+                t = np.array([p[1] for p in pairs])
+                patchiness = np.nanmean([float(c["patchiness_ratio"]) for c in layer])
+                result.append((e.sum() / t.sum(), np.sqrt(np.mean((e - t) ** 2)) / t.mean(), patchiness))
+            out[(name, label)] = result
     return scene, seed, out
 
 
@@ -77,22 +83,27 @@ def main():
         for scene, seed, out in pool.map(lambda j: one(*j), jobs):
             results.setdefault(scene, {})[seed] = out
     with open("seed_study.csv", "w") as f:
-        f.write("scene,seed,correction,layer,ratio,relative_rmse\n")
+        f.write("scene,seed,correction,column,layer,ratio,relative_rmse,patchiness_ratio\n")
         for scene, by_seed in results.items():
             for seed, out in by_seed.items():
-                for name, layers in out.items():
-                    for z, (ratio, rmse) in enumerate(layers):
-                        f.write(f"\"{scene}\",{seed},{name},{z},{ratio:.4f},{rmse:.4f}\n")
+                for (name, label), layers in out.items():
+                    for z, (ratio, rmse, patchiness) in enumerate(layers):
+                        f.write(f"\"{scene}\",{seed},{name},{label},{z},{ratio:.4f},{rmse:.4f},{patchiness:.4f}\n")
     print(f"estimate / truth over 1 x 1 m cells, mean ± s.d. (min-max) over {args.seeds} seeds; cell relative RMSE")
     for scene, by_seed in results.items():
         print(f"== {scene}")
         for name in ["corrected", "uncorrected"]:
-            parts = []
-            for z in range(args.layers):
-                r = np.array([by_seed[s][name][z][0] for s in by_seed])
-                e = np.array([by_seed[s][name][z][1] for s in by_seed])
-                parts.append(f"{r.mean():.3f} ± {r.std(ddof=1):.3f} ({r.min():.3f}-{r.max():.3f}), RMSE {e.mean():.3f}")
-            print(f"  {name:12s} " + " | ".join(parts))
+            for label in COLUMNS:
+                parts = []
+                for z in range(args.layers):
+                    r = np.array([by_seed[s][(name, label)][z][0] for s in by_seed])
+                    e = np.array([by_seed[s][(name, label)][z][1] for s in by_seed])
+                    parts.append(f"{r.mean():.3f} ± {r.std(ddof=1):.3f} ({r.min():.3f}-{r.max():.3f}), "
+                                 f"RMSE {e.mean():.3f}")
+                print(f"  {name:12s} {label:6s} " + " | ".join(parts))
+            p = [np.mean([by_seed[s][(name, "pooled")][z][2] for s in by_seed]) for z in range(args.layers)]
+            print(f"  {name:12s} patchiness ratio (mean / pooled, mean over cells) " +
+                  " | ".join(f"{v:.3f}" for v in p))
 
 
 if __name__ == "__main__":

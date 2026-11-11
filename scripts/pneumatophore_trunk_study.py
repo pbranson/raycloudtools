@@ -77,14 +77,14 @@ def detect_trunks(data, z_range, grid=0.05, min_points=200):
     return trunks
 
 
-def estimate(cloud, out):
+def estimate(cloud, out, column):
     run(f"rayrender {cloud} top density --density_model vertical_cylinder --estimator pooled --no_flat_top "
         f"--stem_diameter 0.01 --footprint {FOOTPRINT} --pixel_width 0.05 --min_bound -3,-3,0 --max_bound 3,3,0.3 "
         f"--cells {out}")
     rows = read_csv(out)
-    col = [k for k in rows[0] if k.startswith("mean_density")][0]
+    col = [k for k in rows[0] if k.startswith(column)][0]
     return {(round(float(r["x_min"])), round(float(r["y_min"])), round(float(r["z_min"]), 2)): float(r[col])
-            for r in rows}
+            for r in rows if r[col] != "nan"}
 
 
 def summarise(name, est, truth, trunk_cells):
@@ -108,6 +108,8 @@ def main():
     parser.add_argument("--trunks", default="0.1,0.2", help="trunks per m^2 and mean diameter (m)")
     parser.add_argument("--seed", type=int, default=31)
     parser.add_argument("--margin", type=float, default=0.015, help="beyond the fitted trunk circle (m)")
+    parser.add_argument("--mean", action="store_true",
+                        help="use the mean of the voxel densities in each cell, rather than the pooled density")
     args = parser.parse_args()
     run(f"raycreate pneumatophores {args.seed} --stems_per_m2 {args.stems_per_m2} --trunks {args.trunks} "
         f"--footprint {FOOTPRINT} --truth_cells 1,1,0.1")
@@ -125,11 +127,12 @@ def main():
     is_trunk = (data["red"] == 150) & (data["green"] == 110)
     is_stem = (data["red"] == 40) & (data["green"] == 160) & (data["alpha"] > 0)
 
-    est_a = estimate("pneumatophores.ply", "cells_a.csv")
+    column = "mean_voxel_density_" if args.mean else "density_"
+    est_a = estimate("pneumatophores.ply", "cells_a.csv", column)
     masked = data.copy()
     masked["alpha"][is_trunk] = 0
     write_ply("masked_b.ply", header, masked)
-    est_b = estimate("masked_b.ply", "cells_b.csv")
+    est_b = estimate("masked_b.ply", "cells_b.csv", column)
 
     # C: detect trunks above the pneumatophores, then mask returns within the fitted circles at all heights
     top = float(np.max(data["z"][is_stem]))
@@ -156,7 +159,7 @@ def main():
     masked = data.copy()
     masked["alpha"][remove] = 0
     write_ply("masked_c.ply", header, masked)
-    est_c = estimate("masked_c.ply", "cells_c.csv")
+    est_c = estimate("masked_c.ply", "cells_c.csv", column)
 
     summarise("A: all returns", est_a, truth, trunk_cells)
     summarise("B: trunk returns removed (perfect separation)", est_b, truth, trunk_cells)
