@@ -6,7 +6,8 @@ billions of rays, producing a single 3D gridded output for hydrodynamic models.
 **Status:** implemented as `raysplit ... tiles`, `raydensity` and `scripts/raydensity_tiles.sh`. Tested on synthetic
 scenes (a 6 m plot in 3 x 3 tiles gave the same cells as a single run; with `--ground`, layers on a 10% slope were
 within 0.5% of flat ground over the plot and 3.5% per cell), but not yet at the scale of billions of rays. The
-estimator and its accuracy are described in `pneumatophore_density_method.md`.
+estimator, its accuracy and its known biases are described in
+[`pneumatophore_density_report.md`](pneumatophore_density_report.md).
 
 ```console
 raydensity_tiles.sh forest.ply forest.zarr 400000,6100000 25 12,12 1,4.3 32 -- --ground forest_mesh.ply \
@@ -48,9 +49,10 @@ ground model  ->  ray binning into tiles (+ halo)  ->  per-tile density (paralle
   core is output. With the halo, a tile's core voxels receive exactly the same rays, in the same order, as in a
   single global run, so the result is identical to float rounding: tiles have no seams and need no blending.
 * The pooled neighbourhood is (2k+1) x (2k+1) voxels with k = round(pool_radius / w), i.e. +-(k + 1/2) w: +-0.075 m
-  for the default pool_radius 0.05 at 5 cm voxels. Keep the default for patchy stands; 0.1 (+-0.125 m, halo 0.2 m)
-  reduces the few-percent high bias of `density` in uniform stands but reads low in patches smaller than the window
-  (see the method note).
+  for the default pool_radius 0.05 at 5 cm voxels. A wider window (0.1: +-0.125 m, halo 0.2 m) reduces the
+  self-shadowing bias of `density` (about +0.47 d_eff / window width: +6-8% at the default, +2-4% with 0.1, for 1 cm
+  stems), but reads lower where stems are patchy or clustered at a smaller scale (cable roots: 0.87 with the default,
+  0.77 with 0.1). The default is recommended (see the report, sections 8.1 and 8.6).
 * `raydensity`'s voxel grid covers the halo (rounded up to whole voxels) plus one more voxel. The split (step 2)
   must cover that grid with some margin, so that the ray ends it clips lie outside the grid: split with a halo 1.5
   voxels larger, 0.225 m by default (`scripts/raydensity_tiles.sh` does this). A split halo equal to the
@@ -129,11 +131,14 @@ mesh triangles overlapping the tile and its halo are used, so one mesh for the w
   without writing, so a store can't mix parameters. Each tile also writes `tiles/i_j.json` (its command line, input
   and halo), which Zarr readers ignore.
 * Variables (as implemented), on dimensions (z, y, x) for 1 x 1 x 0.1 m cells (300 x 300 x 6 per variable, small):
-  `density` (N d, the mean of the observed voxel densities: the main output), `pooled_density` (total hits over
-  total weighted path of the observed voxels, as if the cell were one voxel: accurate for uniform stems, but about
-  half the truth where stems are patchy within the cell), `patchiness_ratio` (density / pooled_density, about 1.1
-  for random stems and near 2 for patches), `solid_fraction` (N pi d^2 / 4 from `density`), `hits`, `weighted_path`
-  and `observed_fraction` (float32; unobserved cells are NaN, with `observed_fraction` 0), plus coordinates `x`,
+  `density` (N d, the mean of the observed voxel densities: the main output, which reads high by the self-shadowing
+  bias of the report's section 8.1), `pooled_density` (total corrected hits over total weighted path of the observed
+  voxels, i.e. the path-weighted mean of the voxel densities: within 3% for stems uniform within the cell, but about
+  half the truth where stems are patchy within the cell, and low where the density falls with height),
+  `patchiness_ratio` (density / pooled_density: 1.03-1.09 for random stems in the lowest 0.2 m, 1.6-2.4 for patches
+  and cable roots), `solid_fraction` (N pi d^2 / 4 from `density`), `hits`, `weighted_path` and `observed_fraction`
+  (the fraction of the cell's voxels with more than 2 rays after the neighbour top-up; cells below about 0.9 read
+  low) (float32; unobserved cells are NaN, with `observed_fraction` 0), plus coordinates `x`,
   `y`, `z` (cell centres, float64, so that georeferenced coordinates are exact). With `--voxels`, also
   `voxel_density` on (zv, yv, xv) as heights above ground (6000 x 6000 x 12 float32, 1.7 GB, for 3D inspection). Not
   yet output: the mean d_eff / d, and a flag for cells at the solid fraction limit.
@@ -142,9 +147,12 @@ mesh triangles overlapping the tile and its halo are used, so one mesh for the w
   estimator, pool_radius, min_gap_ratio, min_sin_zenith, max_sin_zenith, occlusion_correction and
   flat_top_compensation. Not yet written: the CRS (the coordinates are in the cloud's frame) and the software
   version. The per-tile command lines are in `tiles/i_j.json`.
-* Because `density` is a mean of voxel values, and `observed_fraction` (the count of observed voxels), `hits` and
-  `weighted_path` are also stored, coarser cells (e.g. 5 m for a larger model domain) can be aggregated exactly from
-  the store: `density` weighted by `observed_fraction`, and `pooled_density` from the summed hits and paths.
+* Because `density` is a mean of voxel values, and `observed_fraction`, `hits` and `weighted_path` are also stored,
+  coarser cells (e.g. 5 m for a larger model domain) can be aggregated from the store: `pooled_density` from the
+  summed hits and paths, and `density` weighted by the number of observed voxels (`observed_fraction` times the
+  voxels per cell). When the cell size is a multiple of the voxel width every cell has the same number of voxels
+  (also with `--ground`), so weighting by `observed_fraction` is exact; otherwise the count varies with the ground
+  height and isn't stored.
 
 ### 6. Validation
 
