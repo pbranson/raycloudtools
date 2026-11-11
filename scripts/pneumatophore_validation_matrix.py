@@ -24,7 +24,10 @@ and layer, as mean +- standard error over the seeds:
   obs, obs_min    mean and minimum observed fraction of the cells
   ss              rayrender's mean self-shadow factor, and H1 = 1 + 0.4732 d_eff / W (W the window width)
   t_gen, t_est    run time (s) of the scene generation and of each estimate
-bins.csv gives density / truth in bins of observed fraction (pooled over seeds and cells). Examples:
+bins.csv gives density / truth in bins of observed fraction (pooled over seeds and cells), and line_distance.csv by
+distance of the cell centre from the nearest walk line (block A). Block X (run only when named) holds the diagnostic
+runs of the failures. Pass: |d/t90 - 1| <= 0.02 in 0-0.1 and 0.1-0.2 m for the pass-eligible configurations;
+--rerun_failures adds seeds to the failing ones. Examples:
   scripts/pneumatophore_validation_matrix.py --blocks A,B --out matrix --bin build/raycloudtools/raycreate,...
   scripts/pneumatophore_validation_matrix.py --blocks all --summary_only --out matrix
 """
@@ -197,6 +200,37 @@ def build_configs():
             v += pair(f"v{voxel} p{pool}", voxel=voxel, pool=pool, extra=e)
         c.append(Config("J", f"[{cfg.block}] {cfg.label}", cfg.scene_args, v, layers=cfg.layers,
                         plot_width=cfg.plot_width, eval_half=cfg.eval_half))
+    # ---- X. diagnostics of the failures (not part of "all"): the errors that appear in 0.1-0.2 m, where stems of
+    # the default heights end, repeated with stems of one height (0.6 m, no tops below 0.6 m)
+    fixed = "--height 0.6,0"
+    top5 = layers_to(0.5)
+    for n in (300, 1000):
+        c.append(Config("X", f"fixed 0.6, range noise 0.03, {n}/m2", scene(n, f"{fixed} --range_noise 0.03"), pair(),
+                        layers=top5, pass_eligible=False))
+        c.append(Config("X", f"fixed 0.6, outline, range noise 0.03, {n}/m2",
+                        scene(n, f"{fixed} --return_range outline --range_noise 0.03"),
+                        pair(extra="--return_range outline"), layers=top5, pass_eligible=False))
+    for sd in (0.02, 0.05):
+        c.append(Config("X", f"fixed 0.6, pose noise {sd} per 0.5 m, 300/m2",
+                        scene(300, f"{fixed} --pose_noise {sd},0.5"), pair(), layers=top5, pass_eligible=False))
+    # wider windows for wide stems (d_eff / W smaller, so less second-order self-shadowing)
+    for d in (0.02,):
+        v = pair("p0.1", diameter=d, pool=0.1) + pair("p0.15", diameter=d, pool=0.15)
+        c.append(Config("X", f"true d {d}, 300/m2, wider windows", scene(300, f"--diameter {d}"), v,
+                        pass_eligible=False))
+        c.append(Config("X", f"true d {d}, fixed 0.6, 300/m2", scene(300, f"--diameter {d} {fixed}"),
+                        pair(diameter=d), layers=top5, pass_eligible=False))
+    c.append(Config("X", "mixture 6/14 mm, fixed 0.6, 300/m2",
+                    scene(300, f"--diameter_mixture 0.006,0.014,0.5 {fixed}"), pair(), layers=top5,
+                    pass_eligible=False))
+    # the layer holding the tops of stems of one height: tops on a layer boundary (0.6 m) evaluated with the grid
+    # extending above them, and tops within a layer (0.55 m)
+    for h in (0.6, 0.55):
+        c.append(Config("X", f"fixed {h}, grid to 0.7 m, 300/m2", scene(300, f"--height {h},0"), pair(),
+                        layers=layers_to(0.7), pass_eligible=False))
+    # no beam footprint: the stem tops' contribution without the footprint's widening of the top discs
+    c.append(Config("X", "no footprint, heights normal 0.25, 300/m2", scene(300, footprint=""), pair(footprint=""),
+                    layers=layers_to(0.5), pass_eligible=False))
     return c
 
 
@@ -423,14 +457,15 @@ def summarise(out, configs, seeds_filter=None):
     return rows
 
 
-def failures(rows, configs):
-    """pass-eligible configurations (and variants) whose d/t90 in 0-0.2 m misses 1 +- PASS_TOLERANCE"""
+def failures(rows, configs, variant="ss"):
+    """pass-eligible configurations whose d/t90 in 0-0.2 m misses 1 +- PASS_TOLERANCE, for the variants ending with
+    @c variant (all variants if empty). Layers without cells observed >= 0.9 are not tested"""
     eligible = {cfg.label: cfg for cfg in configs if cfg.pass_eligible}
     failed = set()
     for r in rows:
-        if r["config"] not in eligible or r["z"] > 0.15 or not pass_variant(r):
+        if r["config"] not in eligible or r["z"] > 0.15 or not pass_variant(r) or not r["variant"].endswith(variant):
             continue
-        if math.isnan(r["dt90"]) or abs(r["dt90"] - 1.0) > PASS_TOLERANCE:
+        if not math.isnan(r["dt90"]) and abs(r["dt90"] - 1.0) > PASS_TOLERANCE:
             failed.add(r["config"])
     return failed
 
@@ -450,7 +485,8 @@ def pass_variant(row):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     configs = build_configs()
-    parser.add_argument("--blocks", default="all", help="comma separated block letters (A-J), or all")
+    parser.add_argument("--blocks", default="all",
+                        help="comma separated block letters (A-J, and X for the diagnostics), or all (A-J)")
     parser.add_argument("--configs", default="", help="only configurations whose label matches this regex")
     parser.add_argument("--seeds", default=SEEDS)
     parser.add_argument("--rays_per_m", type=float, default=56250.0)
@@ -462,11 +498,13 @@ def main():
     parser.add_argument("--list", action="store_true", help="list the configurations and exit")
     parser.add_argument("--rerun_failures", default="",
                         help="seeds to add for pass-eligible configurations that fail with the seeds present")
+    parser.add_argument("--rerun_variant", default="ss",
+                        help="with --rerun_failures: the variants (by name ending) whose failure counts")
     args = parser.parse_args()
     if args.bin:
         os.environ["PATH"] = os.pathsep.join(os.path.abspath(b) for b in args.bin.split(",")) + os.pathsep + \
             os.environ["PATH"]
-    blocks = set("ABCDEFGHIJ") if args.blocks == "all" else set(args.blocks.split(","))
+    blocks = set("ABCDEFGHIJ") if args.blocks == "all" else set(args.blocks.split(","))  # X only on request
     selected = [c for c in configs if c.block in blocks and (not args.configs or re.search(args.configs, c.label))]
     if args.list:
         for c in selected:
@@ -478,7 +516,7 @@ def main():
     seeds = [int(s) for s in args.seeds.split(",")]
     if args.rerun_failures:
         rows = summarise(args.out, configs)
-        failed = failures(rows, selected)
+        failed = failures(rows, selected, args.rerun_variant)
         selected = [c for c in selected if c.label in failed]
         seeds = [int(s) for s in args.rerun_failures.split(",")]
         print(f"re-running {len(selected)} failing configurations with seeds {seeds}")
