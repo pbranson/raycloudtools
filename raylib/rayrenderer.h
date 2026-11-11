@@ -66,6 +66,11 @@ struct RAYLIB_EXPORT BeamFootprint
   /// minimum fraction of the beam's power that an element must intercept to trigger a return. In practice this is
   /// a calibration parameter: it depends on the scanner's detection threshold, the element reflectance and range.
   double threshold = 0.05;
+  /// Where along the beam axis a return from a partly intercepted stem is reported. false (default): at the range
+  /// of the physical stem surface (the nearest illuminated part of the stem), as a range measurement would give.
+  /// true: where the beam axis enters the footprint-widened outline of the stem (an idealisation used before).
+  /// The correct choice for a given scanner can be checked from the spread of returns around isolated stems.
+  bool range_to_outline = false;
   inline bool enabled() const { return exit_diameter > 0.0 || divergence > 0.0; }
   /// the 1/e^2 beam diameter at the given range
   inline double diameter(double range) const { return exit_diameter + divergence * range; }
