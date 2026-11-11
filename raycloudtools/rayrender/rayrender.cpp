@@ -56,8 +56,9 @@ void usage(int exit_code = 1)
   std::cout << "                                             and detection threshold (fraction of beam power), to" << std::endl;
   std::cout << "                                             correct for the beam footprint widening thin stems" << std::endl;
   std::cout << "                     --estimator crossing  - for density styles: count hit rays' path to the voxel" << std::endl;
-  std::cout << "                                             exit. Exact for few, discrete elements per voxel (small" << std::endl;
-  std::cout << "                                             voxels). Default beer_lambert: path to hit (turbid medium)" << std::endl;
+  std::cout << "                                             exit (and through the stem). No occlusion correction, so" << std::endl;
+  std::cout << "                                             biased low for dense stems with a beam footprint." << std::endl;
+  std::cout << "                                             Default beer_lambert: path to hit (turbid medium)" << std::endl;
   std::cout << "                     --estimator pooled    - beer_lambert pooled over a neighbourhood of voxels, and" << std::endl;
   std::cout << "                                             corrected for the stems' (widened) cross-sections" << std::endl;
   std::cout << "                     --pool_radius 0.05    - nominal half-width (m) of the neighbourhood for --estimator" << std::endl;
