@@ -45,7 +45,9 @@ bool RAYLIB_EXPORT splitGrid(const std::string &file_name, const std::string &cl
 /// that crosses the tile expanded by @c halo, within heights [min_z, max_z]. Unlike splitGrid, each ray keeps its
 /// original start point, so that its range from the scanner is kept (for the beam footprint). Its end is clipped to
 /// the expanded tile, and when clipped it is marked as unbounded (zero alpha), as the ray didn't stop within the tile.
-/// If @c num_tiles is positive, only tiles 0 to num_tiles - 1 in each axis are written (the domain).
+/// If @c num_tiles is positive, only tiles 0 to num_tiles - 1 in each axis are written (the domain), in one pass
+/// through the cloud (per 256 tiles). Otherwise the tiles are bounded by the rays, which takes an extra pass.
+/// Tiles that no ray crosses have no file. Fails if no ray crosses any tile.
 bool RAYLIB_EXPORT splitTiles(const std::string &file_name, const std::string &cloud_name_stub,
                               const Eigen::Vector2d &origin, double tile_width, double halo, double min_z,
                               double max_z, const Eigen::Vector2i &num_tiles = Eigen::Vector2i(0, 0));

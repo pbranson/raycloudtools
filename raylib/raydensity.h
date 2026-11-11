@@ -14,9 +14,10 @@
 
 namespace ray
 {
-/// Minimal writer for a Zarr (version 2) store of uncompressed, little-endian float32 arrays in C order. Readable by
-/// zarr-python, xarray (open_zarr) and GDAL. Files are written to a temporary name and then renamed, so concurrent
-/// writers of the same (identical) metadata, or of different chunks, don't conflict.
+/// Minimal writer for a Zarr (version 2) store of uncompressed, little-endian float32 (or float64) arrays in C order.
+/// Readable by zarr-python, xarray (open_zarr) and GDAL. Files are written to a temporary name (unique to the process
+/// and call) and then renamed, so concurrent writers of the same (identical) metadata, or of different chunks, don't
+/// conflict.
 class RAYLIB_EXPORT ZarrStore
 {
 public:
@@ -25,16 +26,29 @@ public:
   {}
   /// Writes the group metadata, with the attributes given as the members of a JSON object (without braces)
   bool writeGroup(const std::string &attributes) const;
-  /// Writes an array's metadata. @c dimensions are the dimension names (for xarray), slowest varying first
+  /// Writes an array's metadata. @c dimensions are the dimension names (for xarray), slowest varying first. @c dtype
+  /// is "<f4" (float32) or "<f8" (float64), and must match the data given to writeChunk
   bool writeArray(const std::string &name, const std::vector<int> &shape, const std::vector<int> &chunks,
-                  const std::vector<std::string> &dimensions, const std::string &attributes = "") const;
-  /// Writes one chunk of an array, of the full chunk shape (C order)
+                  const std::vector<std::string> &dimensions, const std::string &attributes = "",
+                  const std::string &dtype = "<f4") const;
+  /// Writes one chunk of a float32 array, of the full chunk shape (C order)
   bool writeChunk(const std::string &name, const std::vector<int> &chunk_index, const std::vector<float> &data) const;
-  /// Writes a 1D array as a single chunk (e.g. a coordinate)
+  /// Writes one chunk of a float64 array, of the full chunk shape (C order)
+  bool writeChunk(const std::string &name, const std::vector<int> &chunk_index, const std::vector<double> &data) const;
+  /// Writes a 1D float32 array as a single chunk
   bool write1D(const std::string &name, const std::vector<float> &data, const std::string &attributes = "") const;
+  /// Writes a 1D float64 array as a single chunk (e.g. a coordinate, which needs float64 for georeferenced values)
+  bool write1D(const std::string &name, const std::vector<double> &data, const std::string &attributes = "") const;
+  /// Writes a file that isn't part of the Zarr data model, at @c relative_path within the store (creating its
+  /// directory). Zarr readers ignore directories without Zarr metadata
+  bool writeText(const std::string &relative_path, const std::string &text) const;
+  /// Reads a file at @c relative_path within the store. Returns false if it doesn't exist
+  bool readText(const std::string &relative_path, std::string &text) const;
 
 private:
   bool writeFile(const std::string &file_name, const char *data, size_t size) const;
+  bool writeChunkData(const std::string &name, const std::vector<int> &chunk_index, const char *data,
+                      size_t size) const;
   std::string path_;
 };
 
@@ -50,7 +64,10 @@ struct RAYLIB_EXPORT DensityTileParams
   /// The number of tiles in the domain in x and y
   Eigen::Vector2i num_tiles = Eigen::Vector2i(1, 1);
   /// Rays within this distance outside the tile are included, so that the tile's voxels are estimated exactly as
-  /// in a single run over the whole domain. Negative chooses the minimum: pool_radius plus two voxels
+  /// in a single run over the whole domain. It must be at least pool_radius plus two voxel widths (the pooled
+  /// neighbourhood and the neighbour prior). Negative chooses this minimum. The voxel grid covers the halo rounded up
+  /// to whole voxels, plus one voxel, so the input (e.g. from splitTiles) needs a halo at least 1.5 voxels larger,
+  /// for the ray ends that it clips to lie outside the grid
   double halo = -1.0;
   double voxel_width = 0.05;
   /// The output cells. The tile width must be a multiple of the cell width in x and y, and of the voxel width
@@ -65,19 +82,23 @@ struct RAYLIB_EXPORT DensityTileParams
   /// Also output the voxel densities (as heights above ground), not just the cells
   bool write_voxels = false;
   DensityOptions options;
-  /// Free text stored in the store's attributes, e.g. the command line
+  /// Free text describing this tile's run (e.g. the command line), written with the tile's index, input and halo to
+  /// tiles/i_j.json in the store. It is not in the store's attributes, which are identical for every tile
   std::string description;
 };
 
 /// Estimates the density in one tile from @c cloud_file (for example, from raysplit tiles, which keeps every ray
 /// crossing the tile and its halo), and writes the tile's chunk of each array in the Zarr store at @c store_path.
-/// The store's metadata (identical for every tile) is also written. Output arrays on dimensions (z, y, x) of cells:
+/// The store's metadata, identical for every tile, is written first. If the store already has metadata that differs
+/// (it was written with different parameters), the tile fails without writing. Output arrays on dimensions (z, y, x)
+/// of cells, with float64 coordinates x, y (cell centres) and z (cell centre height):
 ///   density: the mean of the observed voxel densities in the cell (N d for vertical_cylinder, in m^-1)
 ///   single_voxel_density: total hits over total weighted path in the cell, as if one voxel the size of the cell
 ///   hits, weighted_path: the sums over the cell's observed voxels
 ///   observed_fraction: the fraction of the cell's voxels with enough rays for an estimate
 ///   solid_fraction: N pi d^2 / 4, when a stem diameter is given
-/// and optionally voxel_density on dimensions (zv, yv, xv). Unobserved cells and voxels are NaN.
+/// and optionally voxel_density on dimensions (zv, yv, xv). Unobserved cells and voxels are NaN. Returns false (with a
+/// message) on invalid parameters, a missing input, or a failed write.
 bool RAYLIB_EXPORT estimateDensityTile(const std::string &cloud_file, const DensityTileParams &params,
                                        const std::string &store_path);
 }  // namespace ray

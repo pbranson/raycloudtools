@@ -459,23 +459,24 @@ bool splitTiles(const std::string &file_name, const std::string &cloud_name_stub
     std::cerr << "Error: splitTiles requires a positive tile width, non-negative halo and max_z > min_z" << std::endl;
     return false;
   }
-  Cloud::Info info;
-  if (!Cloud::getInfo(file_name, info))
-  {
-    return false;
-  }
   const double big = 1e7;
   auto tile_index = [&](double x, int axis) { return static_cast<int>(std::floor((x - origin[axis]) / tile_width)); };
-  Eigen::Vector2i min_index(tile_index(info.rays_bound.min_bound_[0] - halo, 0),
-                            tile_index(info.rays_bound.min_bound_[1] - halo, 1));
-  Eigen::Vector2i max_index(tile_index(info.rays_bound.max_bound_[0] + halo, 0),
-                            tile_index(info.rays_bound.max_bound_[1] + halo, 1));
-  for (int axis = 0; axis < 2; axis++)
+  Eigen::Vector2i min_index(0, 0), max_index = num_tiles - Eigen::Vector2i(1, 1);
+  if ((num_tiles.array() <= 0).any())
   {
-    if (num_tiles[axis] > 0)  // limit to the domain
+    // no domain given in some axis, so bound the tiles by the rays (an extra pass through the cloud)
+    Cloud::Info info;
+    if (!Cloud::getInfo(file_name, info))
     {
-      min_index[axis] = std::max(min_index[axis], 0);
-      max_index[axis] = std::min(max_index[axis], num_tiles[axis] - 1);
+      return false;
+    }
+    for (int axis = 0; axis < 2; axis++)
+    {
+      if (num_tiles[axis] <= 0)
+      {
+        min_index[axis] = tile_index(info.rays_bound.min_bound_[axis] - halo, axis);
+        max_index[axis] = tile_index(info.rays_bound.max_bound_[axis] + halo, axis);
+      }
     }
   }
   if ((max_index.array() < min_index.array()).any())
@@ -493,6 +494,7 @@ bool splitTiles(const std::string &file_name, const std::string &cloud_name_stub
   }
   const Cuboid slab(Eigen::Vector3d(-big, -big, min_z), Eigen::Vector3d(big, big, max_z));
   const int max_open_files = 256;
+  int num_written = 0;
   for (int pass = 0; pass < length; pass += max_open_files)
   {
     if (length > max_open_files)
@@ -542,6 +544,7 @@ bool splitTiles(const std::string &file_name, const std::string &cloud_name_stub
               std::stringstream name;
               name << cloud_name_stub << "_" << x << "_" << y << ".ply";
               writers[static_cast<size_t>(index)].begin(name.str());
+              num_written++;
             }
             chunks[static_cast<size_t>(index)].addRay(starts[i], end, times[i], colour);  // keeps the original start
           }
@@ -565,6 +568,12 @@ bool splitTiles(const std::string &file_name, const std::string &cloud_name_stub
       writer.end();
     }
   }
+  if (num_written == 0)
+  {
+    std::cerr << "Error: no rays cross the domain within the height range" << std::endl;
+    return false;
+  }
+  std::cout << "wrote " << num_written << " tiles" << std::endl;
   return true;
 }
 

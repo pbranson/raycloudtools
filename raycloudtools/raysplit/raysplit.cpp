@@ -37,10 +37,11 @@ void usage(int exit_code = 1)
   std::cout << "                  grid wx,wy,wz 1        - same as above, but with a 1 metre overlap between cells." << std::endl;
   std::cout << "                  grid wx,wy,wz,wt       - splits into a grid of files, cell width wx,wy,wz and period wt. 0 for unused axes." << std::endl;
   std::cout << "                  capsule 1,2,3 5,8,12 7 - splits within a capsule using start, end and radius" << std::endl;
-  std::cout << "                  tiles 0,0 25 0.15 -1,2 - splits into 25 m tiles from origin 0,0 for raydensity, each with" << std::endl;
-  std::cout << "                                           all rays crossing it (+0.15 m halo) between heights -1 and 2," << std::endl;
-  std::cout << "                                           keeping ray start points. Files are named _i_j for tile i,j" << std::endl;
-  std::cout << "                  tiles 0,0 25 0.15 -1,2 12,12 - as above, only for tiles 0 to 11 in x and y (the domain)" << std::endl;
+  std::cout << "                  tiles 0,0 25 0.225 -1,2 - splits into 25 m tiles from origin 0,0 for raydensity, each with" << std::endl;
+  std::cout << "                                           all rays crossing it (+0.225 m halo) between heights -1 and 2," << std::endl;
+  std::cout << "                                           keeping ray start points. Files are named _i_j for tile i,j." << std::endl;
+  std::cout << "                                           For raydensity: its --halo plus 1.5 voxels (or more)" << std::endl;
+  std::cout << "                  tiles 0,0 25 0.225 -1,2 12,12 - as above, only for tiles 0 to 11 in x and y (the domain)" << std::endl;
 // clang-format on
   exit(exit_code);
 }
