@@ -19,6 +19,8 @@ import subprocess
 
 import numpy as np
 
+from rayply_numpy import read_ply, write_ply  # from this script's directory
+
 FOOTPRINT = "0.01,0.003,0.05"
 
 
@@ -29,34 +31,6 @@ def run(cmd):
 def read_csv(name):
     with open(name) as f:
         return list(csv.DictReader(f))
-
-
-PLY_TYPES = {"float": "<f4", "float32": "<f4", "double": "<f8", "float64": "<f8", "uchar": "u1", "uint8": "u1",
-             "int": "<i4", "uint": "<u4", "short": "<i2", "ushort": "<u2", "char": "i1"}
-
-
-def ply_dtype(header):
-    """the vertex record type from a binary little-endian .ply header (float or double ray clouds)"""
-    fields = []
-    for line in header.decode("ascii", "replace").splitlines():
-        parts = line.split()
-        if len(parts) == 3 and parts[0] == "property":
-            fields.append((parts[2], PLY_TYPES[parts[1]]))
-    return np.dtype(fields)
-
-
-def read_ply(name):
-    with open(name, "rb") as f:
-        header = b""
-        while not header.endswith(b"end_header\n"):
-            header += f.readline()
-        return header, np.fromfile(f, dtype=ply_dtype(header))
-
-
-def write_ply(name, header, data):
-    with open(name, "wb") as f:
-        f.write(header)
-        data.tofile(f)
 
 
 def components(cells):

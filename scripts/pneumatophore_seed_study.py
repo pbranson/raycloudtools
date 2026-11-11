@@ -31,11 +31,16 @@ def read_csv(name):
         return list(csv.DictReader(f))
 
 
+def key(row):
+    """a cell's identity, from its minimum corner rounded to 0.1 mm"""
+    return tuple(round(float(row[k]), 4) for k in ("x_min", "y_min", "z_min"))
+
+
 def one(scene, options, seed, layers, extra_args):
     d = f"{scene.replace(' ', '_').replace('/', '_').replace(',', '')}_{seed}"
     os.makedirs(d, exist_ok=True)
     run(f"raycreate pneumatophores {seed} {options} --footprint {FOOTPRINT} --truth_cells 1,1,0.1", d)
-    truth = {(r["x_min"], r["y_min"], r["z_min"]): float(r["true_frontal_area_per_volume_Nd"])
+    truth = {key(r): float(r["true_frontal_area_per_volume_Nd"])
              for r in read_csv(f"{d}/pneumatophores_truth_cells.csv")}
     out = {}
     for name, extra in [("corrected", ""), ("uncorrected", "--no_overlap_correction")]:
@@ -46,8 +51,10 @@ def one(scene, options, seed, layers, extra_args):
         col = [k for k in cells[0] if k.startswith("mean_density")][0]
         result = []
         for z in range(layers):
-            pairs = [(float(c[col]), truth[(c["x_min"], c["y_min"], c["z_min"])]) for c in cells
-                     if abs(float(c["z_min"]) - 0.1 * z) < 1e-6 and (c["x_min"], c["y_min"], c["z_min"]) in truth]
+            pairs = [(float(c[col]), truth[key(c)]) for c in cells
+                     if abs(float(c["z_min"]) - 0.1 * z) < 1e-6 and key(c) in truth]
+            if not pairs:
+                raise RuntimeError(f"{d}: no estimated cells in layer {z} match the truth cells")
             e = np.array([p[0] for p in pairs])
             t = np.array([p[1] for p in pairs])
             result.append((e.sum() / t.sum(), np.sqrt(np.mean((e - t) ** 2)) / t.mean()))
