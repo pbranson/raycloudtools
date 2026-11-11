@@ -45,8 +45,10 @@ void usage(int exit_code = 1)
   std::cout << "                                             cylinders (e.g. pneumatophores), giving frontal area per" << std::endl;
   std::cout << "                                             volume N*d (1/m). Default: spherical (leaf area per volume)" << std::endl;
   std::cout << "                     --min_sin_zenith 0.1  - vertical_cylinder only: ignore rays steeper than this" << std::endl;
-  std::cout << "                     --profile name.csv    - for density styles: output mean density per height layer" << std::endl;
-  std::cout << "                     --cells name.csv      - for density styles: output density aggregated into cells" << std::endl;
+  std::cout << "                     --profile name.csv    - for density styles: output the density per height layer" << std::endl;
+  std::cout << "                     --cells name.csv      - for density styles: output density aggregated into cells." << std::endl;
+  std::cout << "                                             Both give the density pooled over the observed voxels" << std::endl;
+  std::cout << "                                             (hits / path), the mean voxel density, and their ratio" << std::endl;
   std::cout << "                     --cell_size 1,1,0.1   - size of the aggregated cells (m), tiling from the min bound" << std::endl;
   std::cout << "                     --max_sin_zenith 1    - vertical_cylinder only: ignore rays shallower than this" << std::endl;
   std::cout << "                     --stem_diameter 0.01  - vertical_cylinder only: mean true stem diameter (m)," << std::endl;
@@ -170,6 +172,7 @@ int rayRender(int argc, char *argv[])
     usage();
   }
   ray::DensityOptions density_options;
+  ray::DensityOutputs density_outputs;
   density_options.flat_top_compensation = !no_flat_top.isSet();
   density_options.overlap_correction = !no_overlap.isSet();
   density_options.min_gap_ratio = min_gap.value();
@@ -179,8 +182,8 @@ int rayRender(int argc, char *argv[])
   }
   if (cells_option.isSet())
   {
-    density_options.cells_file = cells_file.name();
-    density_options.cell_size = cell_size.value();
+    density_outputs.cells_file = cells_file.name();
+    density_outputs.cell_size = cell_size.value();
   }
   if (max_sin_zenith_option.isSet())
   {
@@ -201,7 +204,7 @@ int rayRender(int argc, char *argv[])
   }
   if (profile_file_option.isSet())
   {
-    density_options.profile_file = profile_file.name();
+    density_outputs.profile_file = profile_file.name();
   }
   if (stem_diameter_option.isSet())
   {
@@ -305,7 +308,8 @@ int rayRender(int argc, char *argv[])
 
   if (!ray::renderCloud(cloud_file.name(), bounds, view_dir, render_style, pix_width, image_file.name(),
                         projection_file.name(), mark_origin.isSet(),
-                        transform_file_option.isSet() ? &transform_file.name() : nullptr, density_options))
+                        transform_file_option.isSet() ? &transform_file.name() : nullptr, density_options,
+                        density_outputs))
   {
     usage();
   }

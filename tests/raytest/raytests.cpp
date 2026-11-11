@@ -912,18 +912,21 @@ TEST(Basic, RayDensityPneumatophores)
     // a uniform (random) stand at 100 stems/m^2, which suits the larger pool (the default 0.05 m is about 7% high
     // here, from few hits per neighbourhood; see docs/pneumatophore_density_method.md)
     options.pool_radius = 0.1;
-    options.profile_file = "pneumatophores_test_profile.csv";
+    ray::DensityOutputs outputs;
+    outputs.profile_file = "pneumatophores_test_profile.csv";
     if (correct_footprint)
     {
       options.footprint = params.footprint;
       options.stem_diameter = params.diameter;
     }
     EXPECT_TRUE(ray::renderCloud("pneumatophores_test.ply", bounds, ray::ViewDirection::Top, ray::RenderStyle::Density,
-                                 0.05, "pneumatophores_test.png", "", false, nullptr, options));
-    std::ifstream ifs(options.profile_file);
+                                 0.05, "pneumatophores_test.png", "", false, nullptr, options, outputs));
+    std::ifstream ifs(outputs.profile_file);
     std::string line;
     std::getline(ifs, line);  // header
-    double layer_sum = 0.0;
+    EXPECT_EQ(line, "z_min,z_max,observed_voxels,total_voxels,mean_hits_per_voxel,density_frontal_area_per_volume_Nd,"
+                    "mean_voxel_density_frontal_area_per_volume_Nd,patchiness_ratio");
+    double pooled_sum = 0.0, mean_sum = 0.0;
     for (int i = 0; i < 2; i++)  // the two 0.05 m layers making up the lowest 0.1 m
     {
       std::getline(ifs, line);
@@ -933,13 +936,17 @@ TEST(Basic, RayDensityPneumatophores)
       {
         std::getline(ss, field, ',');
       }
-      layer_sum += std::stod(field);  // mean of the voxel densities
+      pooled_sum += std::stod(field);  // pooled over the layer's voxels
+      std::getline(ss, field, ',');
+      mean_sum += std::stod(field);  // mean of the voxel densities
     }
-    return 0.5 * layer_sum;
+    std::cout << (correct_footprint ? "corrected" : "uncorrected") << " mean of the voxel densities: " << 0.5 * mean_sum
+              << std::endl;
+    return 0.5 * pooled_sum;
   };
   const double corrected = lowest_layer(true);
   const double uncorrected = lowest_layer(false);
-  std::cout << "true N*d near ground: " << truth << ", footprint corrected estimate: " << corrected
+  std::cout << "true N*d near ground: " << truth << ", footprint corrected (pooled) estimate: " << corrected
             << ", uncorrected: " << uncorrected << std::endl;
   EXPECT_NEAR(corrected, truth, 0.05 * truth);
   EXPECT_GT(uncorrected, 1.5 * truth);
