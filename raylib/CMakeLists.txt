@@ -124,6 +124,11 @@ target_include_directories(raylib PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 target_link_libraries(raylib PUBLIC ${RAYTOOLS_LINK})
+# C++17 for std::filesystem (raydensity.cpp), also required of code using raylib's headers
+target_compile_features(raylib PUBLIC cxx_std_17)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9.1)
+  target_link_libraries(raylib PUBLIC stdc++fs)  # std::filesystem is in a separate library before GCC 9.1
+endif()
 
 install(
   FILES
