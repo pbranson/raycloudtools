@@ -11,8 +11,13 @@ estimator, its accuracy and its known biases are described in
 
 ```console
 raydensity_tiles.sh forest.ply forest.zarr 400000,6100000 25 12,12 1,4.3 32 -- --ground forest_mesh.ply \
-  --heights 0,0.6 --stem_diameter 0.01 --footprint 0.01,0.003,0.05
+  --heights 0,0.6 --stem_diameter 0.01 --footprint 0.01,0.003,0.05 \
+  --self_shadow_correction --hybrid --min_observed_fraction 0.9
 ```
+
+The last three options are the recommended estimate (report, section 10): the hybrid, with cells observed less than
+0.9 masked. Use the measured stem diameter and a footprint calibrated with a rod test (report, section 9.2), and
+drop `--hybrid` where range or pose errors exceed about 1-2 cm.
 
 Here `1,4.3` is the absolute height slab of rays to keep (required): for ground between 1.2 and 3.5 m, from the lowest
 ground minus 0.2 m to the highest ground plus the top of `--heights` (0.6 m) plus 0.2 m. Keep it small: a tall slab
@@ -59,8 +64,15 @@ ground model  ->  ray binning into tiles (+ halo)  ->  per-tile density (paralle
   clustered stands whose lower layers are well observed, the experimental single-voxel configuration (`--pool_radius
   0 --self_shadow_correction --self_shadow_second_order --occlusion_radius 0.05 --ratio_bias_correction
   --no_neighbour_priors`; report, section 8.1.2) resolves root lines and patches; there the halo is set by the
-  occlusion radius, 0.15 m at 5 cm voxels, as by default. A hybrid that chooses between the two per cell is in
-  development.
+  occlusion radius, 0.15 m at 5 cm voxels, as by default.
+* `--hybrid` (with `--self_shadow_correction`; off by default, and not with the four single-voxel options, which it
+  sets itself) computes both estimates in the same pass and gives each cell the single-voxel one where that
+  observes at least 0.9 of the cell's voxels, otherwise the default-window one (report, section 8.1.3). It is the
+  recommended configuration where range and pose errors are about 1 cm or less; with larger errors use
+  `--self_shadow_correction` alone (report, section 10). Its single-voxel part takes the occlusion response from the
+  pool_radius neighbourhood, so the default halo covers it, and a tiled run equals a single run. It holds a second
+  copy of the voxel grid while estimating, so a tile needs about twice the memory below, and takes about 5% longer
+  than `--self_shadow_correction` alone.
 * `raydensity`'s voxel grid covers the halo (rounded up to whole voxels) plus one more voxel. The split (step 2)
   must cover that grid with some margin, so that the ray ends it clips lie outside the grid: split with a halo 1.5
   voxels larger, 0.225 m by default (`scripts/raydensity_tiles.sh` does this). A split halo equal to the
@@ -146,7 +158,10 @@ mesh triangles overlapping the tile and its halo are used, so one mesh for the w
   `patchiness_ratio` (density / pooled_density: 1.03-1.09 for random stems in the lowest 0.2 m, 1.6-2.4 for patches
   and cable roots), `solid_fraction` (N pi d^2 / 4 from `density`), `hits`, `weighted_path` and `observed_fraction`
   (the fraction of the cell's voxels with more than 2 rays after the neighbour top-up, or without it with
-  `--no_neighbour_priors`; cells below 0.9 read low, and should be masked: a mask is planned) (float32; unobserved cells are NaN, with `observed_fraction` 0), plus coordinates `x`,
+  `--no_neighbour_priors`, and with `--hybrid` that of the default-window estimate; cells below 0.9 read low) and,
+  with `--hybrid`, `hybrid_weight` (the fraction of the cell's observed voxels taking the single-voxel estimate: 0
+  where the cell takes the default-window estimate, otherwise at least 0.9) (float32; unobserved cells are NaN, with
+  `observed_fraction` 0), plus coordinates `x`,
   `y`, `z` (cell centres, float64, so that georeferenced coordinates are exact). With `--voxels`, also
   `voxel_density` on (zv, yv, xv) as heights above ground (6000 x 6000 x 12 float32, 1.7 GB, for 3D inspection). Not
   yet output: the mean d_eff / d, and a flag for cells at the solid fraction limit.
@@ -155,9 +170,14 @@ mesh triangles overlapping the tile and its halo are used, so one mesh for the w
   estimator, pool_radius, min_gap_ratio, min_sin_zenith, max_sin_zenith, occlusion_correction and
   flat_top_compensation, plus entries written only when the corresponding option is set, so that stores written
   without them are unchanged: `"self_shadow_correction": true`, `"self_shadow_second_order": true`,
-  `"occlusion_radius": <m>`, `"ratio_bias_correction": true` and `"neighbour_priors": false` (for
-  `--no_neighbour_priors`). Tiles run with different options can't share a store. Not yet written: the CRS
+  `"occlusion_radius": <m>`, `"ratio_bias_correction": true`, `"neighbour_priors": false` (for
+  `--no_neighbour_priors`), `"hybrid": true` and `"min_observed_fraction": <f>`. Tiles run with different options can't share a store. Not yet written: the CRS
   (the coordinates are in the cloud's frame) and the software version. The per-tile command lines are in `tiles/i_j.json`.
+* Mask: `--min_observed_fraction f` (default 0, off; 0.9 recommended) sets `density`, `pooled_density`,
+  `patchiness_ratio` and `solid_fraction` to NaN in cells observed less than f, and keeps `observed_fraction`,
+  `hits`, `weighted_path` and `hybrid_weight`, so masked cells can still be inspected and aggregated. With `--ground`
+  the layers are heights above the ground, so a low layer isn't blanked for lying partly below it, as it would be
+  with absolute heights over uneven ground.
 * Because `density` is a mean of voxel values, and `observed_fraction`, `hits` and `weighted_path` are also stored,
   coarser cells (e.g. 5 m for a larger model domain) can be aggregated from the store: `pooled_density` from the
   summed hits and paths, and `density` weighted by the number of observed voxels (`observed_fraction` times the
