@@ -4,10 +4,12 @@
 //
 // Author: Thomas Lowe
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <optional>
 
 #include "raylib/raycloud.h"
@@ -26,7 +28,16 @@ void usage(int exit_code = 1)
   std::cout << "raytranslate raycloud 0,0,1 - translation (x,y,z) in metres" << std::endl;
   std::cout << "                      0,0,1,24.3 - optional 4th component translates time" << std::endl;
   std::cout << "                      subtract ground_mesh.ply  - translate vertically to remove ground_mesh heights" << std::endl;
-  std::cout << "                      add ground_mesh.ply- translate vertically to add ground_mesh heights" << std::endl;
+  std::cout << "                      add ground_mesh.ply       - translate vertically to add ground_mesh heights" << std::endl;
+  std::cout << "                     --shear - shift each ray start by the ground height beneath the start, and each" << std::endl;
+  std::cout << "                               end by the ground height beneath the end. This shears the rays as if" << std::endl;
+  std::cout << "                               the scene were physically flattened, so the whole ray path keeps its" << std::endl;
+  std::cout << "                               height above ground. Recommended before ray-based density or free-space" << std::endl;
+  std::cout << "                               analysis on sloping ground. Starts with no ground mesh beneath them use" << std::endl;
+  std::cout << "                               the end's height instead (and are counted)." << std::endl;
+  std::cout << "                               Without --shear (default) each ray is moved rigidly by the height beneath" << std::endl;
+  std::cout << "                               its end, which preserves ray directions and lengths, but misplaces points" << std::endl;
+  std::cout << "                               along the ray by (ground slope x horizontal distance from the end)." << std::endl;
   std::cout << "                     --split_untranslated - write any points that could not be" << std::endl;
   std::cout << "                                            translated to a new file (otherwise" << std::endl;
   std::cout << "                                            leave as they were in output raycloud)" << std::endl;
@@ -42,13 +53,14 @@ int rayTranslate(int argc, char *argv[])
   ray::Vector3dArgument translation3;
   ray::Vector4dArgument translation4;
   ray::OptionalFlagArgument split_untranslated("split_untranslated", 'u');
+  ray::OptionalFlagArgument shear("shear", 's');
 
   bool vec3_format = ray::parseCommandLine(argc, argv, { &cloud_file, &translation3 }, { &view_flag });
   bool vec4_format = ray::parseCommandLine(argc, argv, { &cloud_file, &translation4 }, { &view_flag });
-  bool ground_subtract_format =
-    ray::parseCommandLine(argc, argv, { &cloud_file, &subtract, &ground_file }, { &view_flag, &split_untranslated });
-  bool ground_add_format =
-    ray::parseCommandLine(argc, argv, { &cloud_file, &add, &ground_file }, { &view_flag, &split_untranslated });
+  bool ground_subtract_format = ray::parseCommandLine(argc, argv, { &cloud_file, &subtract, &ground_file },
+                                                      { &view_flag, &split_untranslated, &shear });
+  bool ground_add_format = ray::parseCommandLine(argc, argv, { &cloud_file, &add, &ground_file },
+                                                 { &view_flag, &split_untranslated, &shear });
   if (!vec3_format && !vec4_format && !ground_subtract_format && !ground_add_format)
     usage();
 
@@ -88,13 +100,33 @@ int rayTranslate(int argc, char *argv[])
     // ground_file's extents, not cloud_file's extents.
     min_bound[2] = std::numeric_limits<double>::max();
     max_bound[2] = std::numeric_limits<double>::lowest();
+    Eigen::Vector3d mesh_min(std::numeric_limits<double>::max(), std::numeric_limits<double>::max(), 0.0);
+    Eigen::Vector3d mesh_max(std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest(), 0.0);
     for (auto &vert : ground_mesh.vertices())
     {
       min_bound[2] = std::min(min_bound[2], vert[2]);
       max_bound[2] = std::max(max_bound[2], vert[2]);
+      mesh_min = ray::minVector(mesh_min, vert);
+      mesh_max = ray::maxVector(mesh_max, vert);
     }
     min_bound[2] -= 0.1;
     max_bound[2] += 0.1;
+    if (shear.isSet())
+    {
+      // Ray starts can lie outside the lateral bounds of the ray ends (e.g. a hand-held scanner walked around the
+      // edge of the scan), so extend the lookup grid to cover the starts, but only where the ground mesh is, so that
+      // distant starts (e.g. airborne) don't create a huge grid. Starts outside the grid fall back to the end height.
+      for (int i = 0; i < 2; i++)
+      {
+        const double lo = std::max(info.starts_bound.min_bound_[i], mesh_min[i]);
+        const double hi = std::min(info.starts_bound.max_bound_[i], mesh_max[i]);
+        if (lo <= hi)
+        {
+          min_bound[i] = std::min(min_bound[i], lo);
+          max_bound[i] = std::max(max_bound[i], hi);
+        }
+      }
+    }
 #if defined DETAILED_GROUND_SUBTRACTION
     Eigen::Vector3d box_min = min_bound;
     Eigen::Vector3d box_max = max_bound;
@@ -119,9 +151,14 @@ int rayTranslate(int argc, char *argv[])
         (ray::minVector(tri.corners[0], ray::minVector(tri.corners[1], tri.corners[2])) - box_min) / voxel_width;
       Eigen::Vector3d tri_max =
         (ray::maxVector(tri.corners[0], ray::maxVector(tri.corners[1], tri.corners[2])) - box_min) / voxel_width;
-      for (int x = (int)tri_min[0]; x <= (int)tri_max[0]; x++)
+      // only insert into cells within the grid. Out of range (e.g. negative) indices are not valid grid cells.
+      const int x_min = std::max(0, (int)std::floor(tri_min[0]));
+      const int y_min = std::max(0, (int)std::floor(tri_min[1]));
+      const int x_max = std::min(grid.dims[0] - 1, (int)std::floor(tri_max[0]));
+      const int y_max = std::min(grid.dims[1] - 1, (int)std::floor(tri_max[1]));
+      for (int x = x_min; x <= x_max; x++)
       {
-        for (int y = (int)tri_min[1]; y <= (int)tri_max[1]; y++)
+        for (int y = y_min; y <= y_max; y++)
         {
           grid.insert(x, y, 0, &tri);
         }
@@ -133,7 +170,62 @@ int rayTranslate(int argc, char *argv[])
   }
 
   // Stats to print at end.
-  int num_missed_triangles = 0, num_totally_missed = 0;
+  int num_missed_triangles = 0, num_totally_missed = 0, num_start_fallbacks = 0;
+
+  // Look up the ground height directly beneath @c pos. Returns no value if there is no ground mesh there.
+  // @c approximated is set when no triangle lies directly beneath @c pos, so the height is estimated from the planes
+  // of the triangles in the same grid cell.
+  auto groundHeight = [&](const Eigen::Vector3d &pos, bool &approximated) -> std::optional<double> {
+    approximated = false;
+    if (pos[0] < min_bound[0] || pos[1] < min_bound[1] || pos[0] > max_bound[0] || pos[1] > max_bound[1])
+    {
+      return std::nullopt;
+    }
+#if defined DETAILED_GROUND_SUBTRACTION
+    // clamp so that points on the upper bound use the last cell
+    const int x = std::min((int)std::floor((pos[0] - min_bound[0]) / voxel_width), grid.dims[0] - 1);
+    const int y = std::min((int)std::floor((pos[1] - min_bound[1]) / voxel_width), grid.dims[1] - 1);
+    if (x < 0 || y < 0)
+    {
+      return std::nullopt;
+    }
+    // intersect a vertical ray directly through the point (not the cell centre), so the height is exact per point
+    Eigen::Vector3d pos_top(pos[0], pos[1], max_bound[2]);
+    Eigen::Vector3d pos_base(pos[0], pos[1], min_bound[2]);
+    auto &tris = grid.cell(x, y, 0).data;
+    // search the triangles in this cell 'bucket'
+    double mean_depth = 0.0;
+    double mean_count = 0.0;
+    for (auto &tri : tris)
+    {
+      double depth = 0.0;
+      if (tri->intersectsRay(pos_top, pos_base, depth))
+      {
+        return pos_top[2] + (pos_base[2] - pos_top[2]) * depth;
+      }
+      if (depth != 0.0)
+      {
+        mean_depth += depth;
+        mean_count++;
+      }
+    }
+    if (mean_count > 0)
+    {
+      mean_depth /= mean_count;
+      approximated = true;
+      return pos_top[2] + (pos_base[2] - pos_top[2]) * mean_depth;
+    }
+    return std::nullopt;
+#else
+    const int x = std::min((int)std::floor((pos[0] - min_bound[0]) / voxel_width), (int)ground_heights.rows() - 1);
+    const int y = std::min((int)std::floor((pos[1] - min_bound[1]) / voxel_width), (int)ground_heights.cols() - 1);
+    if (x < 0 || y < 0 || ground_heights(x, y) == std::numeric_limits<double>::lowest())
+    {
+      return std::nullopt;
+    }
+    return ground_heights(x, y);
+#endif
+  };
 
   // Normal output of translated rays.
   ray::Cloud translated_chunk;
@@ -161,74 +253,45 @@ int rayTranslate(int argc, char *argv[])
   auto translate = [&](Eigen::Vector3d &start, Eigen::Vector3d &end, double &time, ray::RGBA &colour) {
     if (ground_subtract_format || ground_add_format)
     {
-#if defined DETAILED_GROUND_SUBTRACTION
-      Eigen::Vector3i index = ((end - info.ends_bound.min_bound_) / voxel_width).cast<int>();
-      int x = index[0];
-      int y = index[1];
-
-      // now look up the triangle for each pixel centre
-      Eigen::Vector3d pos_top = min_bound + voxel_width * (Eigen::Vector3d((double)x + 0.5, (double)y + 0.5, 0));
-      Eigen::Vector3d pos_base = pos_top;
-      pos_top[2] = max_bound[2];
-      pos_base[2] = min_bound[2];
-      auto &tris = grid.cell(x, y, 0).data;
-      // search the triangles in this cell 'bucket'
-      std::optional<double> height = std::nullopt;
-      double mean_depth = 0.0;
-      double mean_count = 0.0;
-      for (auto &tri : tris)
+      bool approximated = false;
+      const std::optional<double> end_height = groundHeight(end, approximated);
+      if (approximated)
       {
-        double depth = 0.0;
-        if (tri->intersectsRay(pos_top, pos_base, depth))
-        {
-          height = pos_top[2] + (pos_base[2] - pos_top[2]) * depth;
-          break;
-        }
-        if (depth != 0.0)
-        {
-          mean_depth += depth;
-          mean_count++;
-        }
+        num_missed_triangles++;
       }
-      if (!height.has_value())
+      if (end_height.has_value())
       {
-        if (mean_count > 0)
+        double start_height = end_height.value();
+        if (shear.isSet())
         {
-          mean_depth /= mean_count;
-          height = pos_top[2] + (pos_base[2] - pos_top[2]) * mean_depth;
-          num_missed_triangles++;
+          bool start_approximated = false;
+          const std::optional<double> height = groundHeight(start, start_approximated);
+          if (height.has_value())
+          {
+            start_height = height.value();
+          }
+          else
+          {
+            num_start_fallbacks++;
+          }
         }
-        else
-        {
-          num_totally_missed++;
-        }
+        const double sign = ground_subtract_format ? -1.0 : 1.0;
+        start[2] += sign * start_height;
+        end[2] += sign * end_height.value();
       }
-#else
-      const Eigen::Vector3i index = ((end - info.ends_bound.min_bound_) / voxel_width).cast<int>();
-      const std::optional<double> height = ground_heights(index[0], index[1]);
-#endif
-      if (height.has_value())
+      else
       {
-        if (ground_subtract_format)
+        num_totally_missed++;
+        if (split_untranslated.isSet())
         {
-          start[2] -= height.value();
-          end[2] -= height.value();
+          // Push into chunk to be written to untranslated output.
+          untranslated_chunk.starts.push_back(start);
+          untranslated_chunk.ends.push_back(end);
+          untranslated_chunk.times.push_back(time);
+          untranslated_chunk.colours.push_back(colour);
+          // Return to avoid also pushing into the normal output.
+          return;
         }
-        else
-        {
-          start[2] += height.value();
-          end[2] += height.value();
-        }
-      }
-      else if (split_untranslated.isSet())
-      {
-        // Push into chunk to be written to untranslated output.
-        untranslated_chunk.starts.push_back(start);
-        untranslated_chunk.ends.push_back(end);
-        untranslated_chunk.times.push_back(time);
-        untranslated_chunk.colours.push_back(colour);
-        // Return to avoid also pushing into the normal output.
-        return;
       }
     }
     else
@@ -275,6 +338,13 @@ int rayTranslate(int argc, char *argv[])
     std::cout << num_missed_triangles
               << " cloud points not overlapping triangles, if this is large the ground file may not be a lateral "
                  "coverage of the ray cloud."
+              << std::endl;
+  }
+  if (num_start_fallbacks > 0)
+  {
+    std::cout << num_start_fallbacks
+              << " ray starts have no ground mesh beneath them, so were shifted by the ground height beneath their end "
+                 "point instead."
               << std::endl;
   }
   if (num_totally_missed > 0)

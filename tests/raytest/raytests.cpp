@@ -386,6 +386,87 @@ TEST(Basic, RayTranslate)
     cloud.getMoments().size());
 }
 
+/// Shears a synthetic ray cloud onto a sloping planar ground mesh, then checks that raytranslate subtract --shear
+/// flattens both ray starts and ends exactly, that add --shear is its inverse, and that the default (rigid) subtract
+/// only flattens the ends. Ray starts beyond the mesh coverage should fall back to the end's ground height.
+TEST(Basic, RayTranslateShear)
+{
+  // planar ground z = 0.1x + 0.05y + 2, as 2 triangles covering [-10,10]^2
+  auto ground = [](const Eigen::Vector3d &p) { return 0.1 * p[0] + 0.05 * p[1] + 2.0; };
+  ray::Mesh mesh;
+  const double w = 10.0;
+  for (const auto &xy : { Eigen::Vector2d(-w, -w), Eigen::Vector2d(w, -w), Eigen::Vector2d(w, w), Eigen::Vector2d(-w, w) })
+  {
+    Eigen::Vector3d v(xy[0], xy[1], 0.0);
+    v[2] = ground(v);
+    mesh.vertices().push_back(v);
+  }
+  mesh.indexList().push_back(Eigen::Vector3i(0, 1, 2));
+  mesh.indexList().push_back(Eigen::Vector3i(0, 2, 3));
+  EXPECT_TRUE(ray::writePlyMesh("shear_ground_mesh.ply", mesh));
+
+  // flat scene: long near-horizontal rays from a hand-held height, ending within the mesh. The last few starts lie
+  // beyond the mesh coverage.
+  ray::Cloud flat;
+  const int num_rays = 200, num_outside = 5;
+  for (int i = 0; i < num_rays; i++)
+  {
+    Eigen::Vector3d end(ray::random(-8.0, 8.0), ray::random(-8.0, 8.0), ray::random(0.0, 1.0));
+    Eigen::Vector3d start(ray::random(-8.0, 8.0), ray::random(-8.0, 8.0), 1.5);
+    if (i >= num_rays - num_outside)
+    {
+      start[0] = 12.0 + (double)i * 0.1;  // outside the mesh in x
+    }
+    flat.addRay(start, end, (double)i, ray::RGBA(127, 127, 127, 255));
+  }
+  // shear it onto the sloped ground. Starts beyond the mesh use the end's ground height
+  ray::Cloud sheared = flat;
+  for (int i = 0; i < num_rays; i++)
+  {
+    const bool outside = i >= num_rays - num_outside;
+    sheared.starts[i][2] += ground(outside ? flat.ends[i] : flat.starts[i]);
+    sheared.ends[i][2] += ground(flat.ends[i]);
+  }
+  sheared.save("shear_cloud.ply");
+  sheared.save("shear_rigid_cloud.ply");
+
+  const double eps = 1e-4;  // allows for single precision ray storage
+  EXPECT_EQ(command("raytranslate shear_cloud.ply subtract shear_ground_mesh.ply --shear"), 0);
+  ray::Cloud flattened;
+  EXPECT_TRUE(flattened.load("shear_cloud.ply"));
+  ASSERT_EQ(flattened.rayCount(), flat.rayCount());
+  for (size_t i = 0; i < flat.rayCount(); i++)
+  {
+    // ray order is preserved
+    EXPECT_NEAR((flattened.starts[i] - flat.starts[i]).norm(), 0.0, eps) << "ray " << i;
+    EXPECT_NEAR((flattened.ends[i] - flat.ends[i]).norm(), 0.0, eps) << "ray " << i;
+  }
+
+  // add --shear inverts subtract --shear
+  EXPECT_EQ(command("raytranslate shear_cloud.ply add shear_ground_mesh.ply --shear"), 0);
+  ray::Cloud restored;
+  EXPECT_TRUE(restored.load("shear_cloud.ply"));
+  ASSERT_EQ(restored.rayCount(), sheared.rayCount());
+  for (size_t i = 0; i < sheared.rayCount(); i++)
+  {
+    EXPECT_NEAR((restored.starts[i] - sheared.starts[i]).norm(), 0.0, eps) << "ray " << i;
+    EXPECT_NEAR((restored.ends[i] - sheared.ends[i]).norm(), 0.0, eps) << "ray " << i;
+  }
+
+  // the default rigid shift flattens the ends exactly, but moves the start by the end's ground height
+  EXPECT_EQ(command("raytranslate shear_rigid_cloud.ply subtract shear_ground_mesh.ply"), 0);
+  ray::Cloud rigid;
+  EXPECT_TRUE(rigid.load("shear_rigid_cloud.ply"));
+  ASSERT_EQ(rigid.rayCount(), sheared.rayCount());
+  for (size_t i = 0; i < sheared.rayCount(); i++)
+  {
+    EXPECT_NEAR((rigid.ends[i] - flat.ends[i]).norm(), 0.0, eps) << "ray " << i;
+    Eigen::Vector3d expected_start = sheared.starts[i];
+    expected_start[2] -= ground(flat.ends[i]);
+    EXPECT_NEAR((rigid.starts[i] - expected_start).norm(), 0.0, eps) << "ray " << i;
+  }
+}
+
 #if RAYLIB_WITH_QHULL
 /// Creates a terrain ray cloud, then wraps it from below, comparing the mesh to the expected results
 TEST(Basic, RayWrap)

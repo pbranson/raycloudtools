@@ -178,6 +178,8 @@ This gives an example of how the command line tools could be sequenced to analys
 
 <p align="center"><img img width="320" src="https://raw.githubusercontent.com/csiro-robotics/raycloudtools/main/pics/room_translate.png?at=refs%2Fheads%2Fmaster"/></p>
 
+**raytranslate forest.ply subtract forest_mesh.ply --shear** &nbsp;&nbsp;&nbsp; Flatten the ray cloud by removing the ground mesh height (`add` puts it back). With `--shear` each ray start is lowered by the ground height beneath the start and each end by the height beneath the end, as if the scene were physically flattened, so the whole ray path keeps its height above ground. Starts with no ground mesh beneath them use the end's height instead. Without `--shear` (the default) each ray is moved rigidly by the ground height beneath its end, which keeps ray directions and lengths unchanged but misplaces the rest of the ray vertically by (slope × horizontal distance from the end), e.g. 30 cm for a 3 m near-horizontal ray on a 10% slope. Use `--shear` before tools that use the whole ray path (such as ray-based density estimation or free-space analysis) on sloping ground.
+
 **rayrotate room.ply 0 0 30** &nbsp;&nbsp;&nbsp; Rotate the ray cloud 30 degrees around the z axis.
 
 <p align="center"><img img width="320" src="https://raw.githubusercontent.com/csiro-robotics/raycloudtools/main/pics/room_rotate.png?at=refs%2Fheads%2Fmaster"/></p>
