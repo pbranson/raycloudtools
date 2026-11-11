@@ -564,18 +564,155 @@ TEST(Basic, RayDensityFootprintWidth)
 /// The free path response to non-overlapping stems is deterministic. For a negligible footprint it is at least
 /// 1 / (1 - solid fraction), from the stems' area being excluded from the free path. It is a little more, as the
 /// paths start at random free points, so sample the gaps between stems in proportion to their length, and these
-/// gaps are more regular than the exponential gaps between overlapping (Poisson) stems
+/// gaps are more regular than the exponential gaps between overlapping (Poisson) stems. Without widening, the two
+/// return range conventions are the same
 TEST(Basic, RayDensityFreePathResponse)
 {
-  const double response = ray::freePathResponse(0.1, 1.0);
-  EXPECT_EQ(response, ray::freePathResponse(0.1, 1.0));
+  const double response = ray::freePathResponse(0.1, 1.0, 0.0, true);
+  EXPECT_EQ(response, ray::freePathResponse(0.1, 1.0, 0.0, true));
+  EXPECT_EQ(response, ray::freePathResponse(0.1, 1.0, 0.0, false));
   EXPECT_GT(response, 1.0 / (1.0 - 0.1));
   EXPECT_LT(response, 1.0 / (1.0 - 0.1) + 0.05);
   EXPECT_EQ(ray::freePathResponse(0.0, 2.0), 1.0);
-  // widening the stems leaves less free space, so increases the response
-  EXPECT_GT(ray::freePathResponse(0.1, 2.25), response + 0.03);
-  ray::StemResponseTable table;
-  EXPECT_NEAR(table.response(0.1, 2.25), ray::freePathResponse(0.1, 2.25), 1e-9);
+  // with returns at the widened outline, widening the stems leaves less free space, so increases the response
+  const double outline = ray::freePathResponse(0.1, 2.25, 0.0, true);
+  EXPECT_GT(outline, response + 0.03);
+  // with returns at the physical surface, paths can also start within the widened outlines (before the return), and
+  // end further on. The response is similar
+  const double surface = ray::freePathResponse(0.1, 2.25, 0.0, false);
+  std::cout << "free path response at solid fraction 0.1, width ratio 2.25: " << outline << " (outline), " << surface
+            << " (surface)" << std::endl;
+  EXPECT_GT(surface, response + 0.03);
+  EXPECT_NEAR(surface, outline, 0.03);
+  // the precomputed table for no minimum gap matches the simulation (within its rounding across platforms)
+  ray::StemResponseTable outline_table(0.0, true), surface_table(0.0, false);
+  EXPECT_NEAR(outline_table.response(0.1, 2.25), outline, 2e-3);
+  EXPECT_NEAR(surface_table.response(0.1, 2.25), surface, 2e-3);
+  EXPECT_NEAR(surface_table.response(0.25, 1.5), ray::freePathResponse(0.25, 1.5, 0.0, false), 2e-3);
+  // widened outlines that cover the plane leave no free space, and are saturated
+  EXPECT_TRUE(std::isinf(ray::freePathResponse(0.4, 5.0, 0.0, true)));
+  EXPECT_TRUE(std::isinf(outline_table.response(0.4, 5.0)));
+  // a non-zero gap is computed on demand, so is the simulation at the grid nodes
+  ray::StemResponseTable gap_table(0.5, false);
+  EXPECT_NEAR(gap_table.response(0.04 / 2.25, 2.0), ray::freePathResponse(0.04 / 2.25, 2.0, 0.5, false), 1e-9);
+}
+
+/// The inversion of the stem response doesn't assume the response is at least 1: a sparse voxel with a response
+/// below 1 has a true density above its measured density, and is not saturated
+TEST(Basic, RayDensityResponseInversion)
+{
+  bool saturated = true;
+  const double max_density = 50.0;
+  // a response below 1, e.g. from simulation noise, or a model in which part of the stems' outline is free path
+  auto low_response = [](double a) { return 0.9 + 0.001 * a; };
+  const double measured = 3.0;
+  double a = ray::invertDensityResponse(measured, max_density, low_response, saturated);
+  EXPECT_FALSE(saturated);
+  EXPECT_GT(a, measured);
+  EXPECT_NEAR(a * low_response(a), measured, 1e-9);
+  // a response that only reaches the measured density beyond twice it is still bracketed
+  auto very_low_response = [](double) { return 0.3; };
+  a = ray::invertDensityResponse(measured, max_density, very_low_response, saturated);
+  EXPECT_FALSE(saturated);
+  EXPECT_NEAR(a, measured / 0.3, 1e-9);
+  // beyond the response at the maximum density, it is saturated
+  a = ray::invertDensityResponse(100.0, max_density, low_response, saturated);
+  EXPECT_TRUE(saturated);
+  EXPECT_EQ(a, max_density);
+
+  // the stem response table inversion, for 1 cm stems
+  const double diameter = 0.01, width_ratio = 3.0;
+  ray::StemResponseTable table(0.0, false);
+  a = ray::invertStemResponse(measured, width_ratio, diameter, 0.0, 0.4, table, saturated);
+  EXPECT_FALSE(saturated);
+  EXPECT_LT(a, measured);
+  EXPECT_NEAR(a * table.response(0.25 * ray::kPi * diameter * a, width_ratio), measured, 1e-6);
+  ray::invertStemResponse(1000.0, width_ratio, diameter, 0.0, 0.4, table, saturated);
+  EXPECT_TRUE(saturated);
+}
+
+/// A missing input cloud is an error, rather than an empty density grid
+TEST(Basic, RayDensityMissingFile)
+{
+  const ray::Cuboid bounds(Eigen::Vector3d(0, 0, 0), Eigen::Vector3d(1, 1, 1));
+  ray::DensityOptions options;
+  int shift = 0;
+  EXPECT_EQ(ray::estimateDensityGrid("missing_cloud.ply", bounds, 0.1, Eigen::Vector3i(10, 10, 10), options, shift),
+            nullptr);
+  EXPECT_FALSE(ray::renderCloud("missing_cloud.ply", bounds, ray::ViewDirection::Top, ray::RenderStyle::Density, 0.1,
+                                "missing_cloud.png", "", false, nullptr, options));
+}
+
+/// The generator reports returns from stems at the range of the physical stem surface (or the closest approach of
+/// the beam axis, when it misses the stem) by default, or at the widened outline with range_to_outline
+TEST(Basic, RayDensityReturnRange)
+{
+  ray::PneumatophoreParams params;
+  params.num_rays = 20000;
+  params.stems_per_m2 = 30.0;
+  params.plot_width = 2.0;
+  params.margin = 1.5;
+  params.footprint.exit_diameter = 0.01;
+  params.footprint.divergence = 0.003;
+  params.footprint.threshold = 0.05;
+  const ray::StemWidthModel width_model(params.diameter, params.footprint);
+  for (const bool outline : { false, true })
+  {
+    params.footprint.range_to_outline = outline;
+    ray::PneumatophoreGen gen;
+    gen.generate(params, 11);
+    const ray::Cloud &cloud = gen.cloud();
+    int side_hits = 0, on_surface = 0, within = 0, on_outline = 0;
+    for (size_t i = 0; i < cloud.rayCount(); i++)
+    {
+      if (cloud.colours[i].green != 160 || cloud.colours[i].alpha == 0)
+      {
+        continue;  // not a stem return
+      }
+      // the horizontal distance from the return to the nearest stem's axis
+      const Eigen::Vector3d &end = cloud.ends[i];
+      double min_dist = std::numeric_limits<double>::max();
+      Eigen::Vector3d nearest(0, 0, 0);
+      for (const auto &stem : gen.stems())
+      {
+        const double dist = (stem.head<2>() - end.head<2>()).norm();
+        if (dist < min_dist)
+        {
+          min_dist = dist;
+          nearest = stem;
+        }
+      }
+      if (end[2] > nearest[2] - 1e-6)
+      {
+        continue;  // a return from the top of the stem
+      }
+      side_hits++;
+      const double radius = 0.5 * params.diameter;
+      // the effective width is at the range of the beam axis' closest approach to the stem
+      const Eigen::Vector3d dir = (end - cloud.starts[i]).normalized();
+      const Eigen::Vector2d d2 = dir.head<2>();
+      const double along = (nearest.head<2>() - cloud.starts[i].head<2>()).dot(d2) / d2.squaredNorm();
+      const double outline_radius = 0.5 * width_model.width(along);
+      on_surface += std::abs(min_dist - radius) < 1e-6 ? 1 : 0;
+      within += min_dist > radius - 1e-6 && min_dist < outline_radius + 1e-6 ? 1 : 0;
+      on_outline += std::abs(min_dist - outline_radius) < 1e-6 ? 1 : 0;
+    }
+    std::cout << (outline ? "outline" : "surface") << " convention: " << side_hits << " side returns, " << on_surface
+              << " on the stem surface, " << on_outline << " on the widened outline" << std::endl;
+    ASSERT_GT(side_hits, 200);
+    if (outline)
+    {
+      EXPECT_GT(on_outline, 0.95 * side_hits);
+    }
+    else
+    {
+      // the beam axis hits the physical stem for about d / d_eff of the returns, and otherwise the return is at the
+      // closest approach, between the surface and the outline
+      EXPECT_GE(within, 0.99 * side_hits);
+      EXPECT_GT(on_surface, 0.25 * side_hits);
+      EXPECT_LT(on_outline, 0.05 * side_hits);
+    }
+  }
 }
 
 /// Generated stems don't overlap, and have the exact density requested, up to the packing limit

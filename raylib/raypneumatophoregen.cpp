@@ -457,8 +457,11 @@ void PneumatophoreGen::castRay(const Eigen::Vector3d &start, const Eigen::Vector
       {
         continue;
       }
-      // the trunk must be ahead of the scanner (which is never inside a trunk)
-      const double t_in = along - std::sqrt(radius * radius - offset2) / std::sqrt(h2);
+      // the trunk is intercepted. Its return is reported at the physical surface (or the closest approach of the
+      // beam axis, when it misses the trunk), or at the widened outline (BeamFootprint::range_to_outline).
+      // The trunk must be ahead of the scanner (which is never inside a trunk)
+      const double report_radius = params_.footprint.range_to_outline ? radius : std::min(radius, 0.5 * trunk[2]);
+      const double t_in = along - std::sqrt(std::max(0.0, report_radius * report_radius - offset2)) / std::sqrt(h2);
       const double z_in = start[2] + t_in * dir[2];
       if (t_in > 0.0 && t_in < t_end && z_in >= 0.0 && z_in <= params_.trunk_height)
       {
@@ -509,7 +512,18 @@ void PneumatophoreGen::castRay(const Eigen::Vector3d &start, const Eigen::Vector
       double t_hit = inf;
       if (z_in >= 0.0 && z_in <= stem[2])
       {
-        t_hit = t_in;  // hits the side of the stem
+        // hits the side of the stem. The return is reported where the beam axis enters the widened outline, or
+        // (by default) at the physical stem surface, or the closest approach when the axis misses the stem
+        t_hit = t_in;
+        if (!params_.footprint.range_to_outline && h > 1e-6)
+        {
+          const double stem_radius = 0.5 * params_.diameter;
+          t_hit = std::max(t_in, along - std::sqrt(std::max(0.0, stem_radius * stem_radius - offset2)) / h);
+          if (dir[2] > 0.0)
+          {
+            t_hit = std::min(t_hit, (stem[2] - start[2]) / dir[2]);  // a rising ray's return is not above the stem
+          }
+        }
       }
       else if (z_in > stem[2] && dir[2] < 0.0)
       {

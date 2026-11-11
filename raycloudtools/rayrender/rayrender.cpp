@@ -58,8 +58,13 @@ void usage(int exit_code = 1)
   std::cout << "                                             voxels). Default beer_lambert: path to hit (turbid medium)" << std::endl;
   std::cout << "                     --estimator pooled    - beer_lambert pooled over a neighbourhood of voxels, and" << std::endl;
   std::cout << "                                             corrected for the stems' (widened) cross-sections" << std::endl;
-  std::cout << "                     --pool_radius 0.05    - half-width (m) of the neighbourhood for --estimator pooled" << std::endl;
-  std::cout << "                                             and the stem occlusion correction" << std::endl;
+  std::cout << "                     --pool_radius 0.05    - nominal half-width (m) of the neighbourhood for --estimator" << std::endl;
+  std::cout << "                                             pooled and the stem occlusion correction. The neighbourhood" << std::endl;
+  std::cout << "                                             is (2k+1)^2 voxels for k = round(pool_radius/pixel_width)," << std::endl;
+  std::cout << "                                             so +-(k+1/2) voxels: +-0.075 m for 0.05 m at 0.05 m voxels" << std::endl;
+  std::cout << "                     --range_to_outline    - with --footprint: returns from partly intercepted stems are" << std::endl;
+  std::cout << "                                             reported where the beam axis enters the widened stem" << std::endl;
+  std::cout << "                                             outline. Default: at the range of the physical stem surface" << std::endl;
   std::cout << "                     --min_gap 0           - minimum gap between stem surfaces (in stem diameters)" << std::endl;
   std::cout << "                                             assumed by the stem occlusion correction" << std::endl;
   std::cout << "                     --no_overlap_correction - with --stem_diameter: don't correct for stems hiding" << std::endl;
@@ -88,7 +93,7 @@ int rayRender(int argc, char *argv[])
   ray::IntArgument resolution(1, 20000, 512);
   ray::FileArgument cloud_file, image_file, transform_file, projection_file(false), profile_file(false);
   ray::OptionalFlagArgument mark_origin("mark_origin", 'm'), view_flag("view", 'v'), no_flat_top("no_flat_top", 'u'),
-    no_overlap("no_overlap_correction", 'k');
+    no_overlap("no_overlap_correction", 'k'), range_to_outline("range_to_outline", 'w');
   ray::OptionalKeyValueArgument resolution_option("resolution", 'r', &resolution);
   ray::OptionalKeyValueArgument pixel_width_option("pixel_width", 'p', &pixel_width);
   ray::OptionalKeyValueArgument grid_width_option("grid_width", 'g', &grid_width);
@@ -115,8 +120,51 @@ int rayRender(int argc, char *argv[])
           &density_model_option, &min_sin_zenith_option, &profile_file_option, &stem_diameter_option,
           &footprint_option,     &min_bound_option,      &max_bound_option,    &no_flat_top,
           &estimator_option,     &cells_option,          &cell_size_option,    &max_sin_zenith_option,
-          &no_overlap,           &pool_radius_option,    &min_gap_option }))
+          &no_overlap,           &pool_radius_option,    &min_gap_option,      &range_to_outline }))
   {
+    usage();
+  }
+  // the density options only apply to the density styles, and some only to the vertical cylinder model
+  const bool density_style = style.selectedKey() == "density" || style.selectedKey() == "density_rgb";
+  const std::vector<std::pair<std::string, bool>> density_args = { { "density_model", density_model_option.isSet() },
+                                                                   { "min_sin_zenith", min_sin_zenith_option.isSet() },
+                                                                   { "max_sin_zenith", max_sin_zenith_option.isSet() },
+                                                                   { "profile", profile_file_option.isSet() },
+                                                                   { "cells", cells_option.isSet() },
+                                                                   { "cell_size", cell_size_option.isSet() },
+                                                                   { "stem_diameter", stem_diameter_option.isSet() },
+                                                                   { "footprint", footprint_option.isSet() },
+                                                                   { "estimator", estimator_option.isSet() },
+                                                                   { "pool_radius", pool_radius_option.isSet() },
+                                                                   { "min_gap", min_gap_option.isSet() },
+                                                                   { "no_overlap_correction", no_overlap.isSet() },
+                                                                   { "no_flat_top", no_flat_top.isSet() },
+                                                                   { "range_to_outline", range_to_outline.isSet() } };
+  const bool cylinders = density_model_option.isSet() && density_model.selectedKey() == "vertical_cylinder";
+  for (const auto &arg : density_args)
+  {
+    if (arg.second && !density_style)
+    {
+      std::cerr << "Error: --" << arg.first << " only applies to the density and density_rgb styles" << std::endl;
+      usage();
+    }
+    const bool cylinder_only = arg.first == "min_sin_zenith" || arg.first == "max_sin_zenith" ||
+                               arg.first == "stem_diameter" || arg.first == "footprint" || arg.first == "min_gap" ||
+                               arg.first == "no_overlap_correction" || arg.first == "range_to_outline";
+    if (arg.second && cylinder_only && !cylinders)
+    {
+      std::cerr << "Error: --" << arg.first << " requires --density_model vertical_cylinder" << std::endl;
+      usage();
+    }
+  }
+  if (cell_size_option.isSet() && !cells_option.isSet())
+  {
+    std::cerr << "Error: --cell_size requires --cells" << std::endl;
+    usage();
+  }
+  if (range_to_outline.isSet() && !footprint_option.isSet())
+  {
+    std::cerr << "Error: --range_to_outline requires --footprint" << std::endl;
     usage();
   }
   ray::DensityOptions density_options;
@@ -162,6 +210,7 @@ int rayRender(int argc, char *argv[])
     density_options.footprint.exit_diameter = footprint.value()[0];
     density_options.footprint.divergence = footprint.value()[1];
     density_options.footprint.threshold = footprint.value()[2];
+    density_options.footprint.range_to_outline = range_to_outline.isSet();
     if (density_options.distribution != ray::ElementDistribution::VerticalCylinder || !stem_diameter_option.isSet())
     {
       std::cerr << "Error: --footprint requires --density_model vertical_cylinder and --stem_diameter" << std::endl;
