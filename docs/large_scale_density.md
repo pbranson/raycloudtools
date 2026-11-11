@@ -1,8 +1,21 @@
 # Volumetric stem density for large forests: domain decomposition and output
 
-Design note for running the vertical-cylinder density workflow (`rayrender ... --density_model vertical_cylinder
---estimator pooled`) over forests of order 300 x 300 m scanned with many billions of rays, producing a single
-3D gridded output for hydrodynamic models.
+Design note for running the vertical-cylinder density workflow over forests of order 300 x 300 m scanned with many
+billions of rays, producing a single 3D gridded output for hydrodynamic models.
+
+**Status:** implemented as `raysplit ... tiles`, `raydensity` and `scripts/raydensity_tiles.sh`. Tested on synthetic
+scenes (tiled and single runs agree to float rounding; ground-relative layers on a 10% slope match flat ground to
+within 1%), but not yet at the scale of billions of rays.
+
+```console
+raydensity_tiles.sh forest.ply forest.zarr 400000,6100000 25 12,12 32 -- --ground forest_mesh.ply \
+  --heights 0,0.6 --stem_diameter 0.01 --footprint 0.01,0.003,0.05
+```
+
+```python
+import xarray as xr
+cells = xr.open_zarr("forest.zarr", consolidated=False)   # density, solid_fraction, ... on (z, y, x)
+```
 
 ## Why the current interface doesn't scale
 
@@ -52,22 +65,24 @@ pass through them and are biased high.
 
 ### 3. Height above ground
 
-* Flattening the cloud with `raytranslate subtract ground_mesh.ply` shifts each ray's start and end by the ground
-  height at each, which bends ray geometry by about the slope times the ray's horizontal length (about 2 cm for a
-  1 m ray on a 2% slope). This is acceptable for 0.1 m layers, but avoidable:
-* Preferably, keep absolute heights in the voxel grid (each tile covers its local relief), and assign each voxel to
-  a height-above-ground layer using a ground height raster at voxel resolution when aggregating to cells. The
-  ground raster comes from `rayextract terrain` (itself run per tile, as in `scripts/rayextract_trees_large.sh`).
+* Don't flatten the cloud with `raytranslate subtract ground_mesh.ply`: it shifts each **whole ray** by the ground
+  height at its end point, so the rest of the ray is misplaced vertically by the slope times its horizontal
+  distance from its end. Hand-held rays cross several metres of the stem layer, so on a 10% slope this put the
+  rays' paths tens of centimetres out, and underestimated N d by 30-50% in simulation (only this slope has been tested).
+* Instead (as implemented), keep absolute heights in the voxel grid (each tile covers its local relief), and assign
+  each voxel to a height-above-ground layer using the ground height beneath its centre (`--ground`, from the mesh at
+  voxel resolution). The ground mesh comes from `rayextract terrain` (itself run per tile, as in
+  `scripts/rayextract_trees_large.sh`).
 * Ground returns must be removed (zero alpha) before density estimation, using the ground model, as now.
 
 ### 4. Per-tile density (embarrassingly parallel)
 
-A dedicated tool (say `raydensity`) rather than more options on `rayrender`, which is an image renderer:
+A dedicated tool, `raydensity`, rather than more options on `rayrender`, which is an image renderer:
 
 ```
-raydensity tile_12_7.ply --origin x0,y0 --voxel 0.05 --tile 12,7 --tile_size 25 --halo 0.1
-    --stem_diameter 0.01 --footprint 0.01,0.003,0.05 --estimator pooled --ground ground.tif
-    --cell 1,1,0.1 --output forest.zarr
+raydensity tile_12_7.ply forest.zarr --origin x0,y0 --tile_width 25 --tiles 12,12 --tile 12,7 --halo 0.15
+    --voxel 0.05 --cell 1,1,0.1 --heights 0,0.6 --ground ground_mesh.ply
+    --stem_diameter 0.01 --footprint 0.01,0.003,0.05 [--voxels]
 ```
 
 It runs the existing `DensityGrid` pipeline (calculateDensities, applyOverlapCorrection, addNeighbourPriors) on
@@ -82,12 +97,12 @@ output store. Tiles are independent: run with a job array (SLURM), `xargs -P`, o
   visualisation tools, and converts to NetCDF or Cloud Optimised GeoTIFF.
 * Chunk = one tile's core, so each tile writes only its own chunk files, and there is no merge step and no
   locking. The metadata is written once, up front, from the global extent.
-* Suggested variables, on dimensions (z, y, x) for 1 x 1 x 0.1 m cells (300 x 300 x 6 per variable, small):
-  `frontal_area_density` (N d, mean of voxel estimates), `pooled_density` (single cell-sized Beer-Lambert
-  estimate; its ratio to the mean indicates patchiness), `solid_fraction` (N pi d^2 / 4), `hits`,
-  `weighted_path`, `observed_fraction`, `mean_width_ratio` (d_eff / d), and `saturated` (cells at the solid
-  fraction limit). Optionally the voxel-level density (5 cm) as a second, larger array for 3D inspection
-  (6000 x 6000 x 12 float32, 1.7 GB).
+* Variables (as implemented), on dimensions (z, y, x) for 1 x 1 x 0.1 m cells (300 x 300 x 6 per variable, small):
+  `density` (N d, mean of voxel estimates), `single_voxel_density` (total hits over total weighted path, as if
+  the cell were one voxel; its ratio to `density` indicates patchiness), `solid_fraction` (N pi d^2 / 4), `hits`,
+  `weighted_path` and `observed_fraction`, plus coordinates `x`, `y`, `z` (cell centres). With `--voxels`, also
+  `voxel_density` on (zv, yv, xv) as heights above ground (6000 x 6000 x 12 float32, 1.7 GB, for 3D inspection).
+  Not yet output: the mean d_eff / d, and a flag for cells at the solid fraction limit.
 * Attributes: CRS and origin (as for `--georeference`), voxel and cell sizes, stem diameter, footprint, estimator,
   software version and the command line, so results are reproducible.
 * Because the cell values are means of voxel values, and the sufficient statistics (sums and counts) are also
@@ -99,9 +114,9 @@ output store. Tiles are independent: run with a job array (SLURM), `xargs -P`, o
   make exact.
 * The existing synthetic scenes and `scripts/pneumatophore_cell_study.py`, run through the tiled path.
 
-## Suggested implementation steps
+## Remaining work
 
-1. A start-preserving tiling mode in `raysplit` (e.g. `raysplit cloud.ply tiles 25 0.1 --zmax 1.0`), with the
-   height slab filter.
-2. `raydensity` with a dependency-free Zarr writer, ground-relative layers, and per-tile chunks.
-3. A driver script (local parallel and SLURM job array), and the tiled versus single-run test.
+* Run at scale: the split is a single-threaded streaming pass (I/O bound), and each tile is single threaded. A
+  SLURM job array version of `scripts/raydensity_tiles.sh` is straightforward (one tile per array index).
+* Optional zlib compression of chunks (the writer is uncompressed, which xarray reads directly).
+* A consolidated metadata file (`.zmetadata`) to speed up opening stores with many arrays over a network.

@@ -65,6 +65,7 @@ def main():
     parser.add_argument("--crossing_widths", default="", help="instead test the crossing estimator at these widths")
     parser.add_argument("--pooled_widths", default="", help="instead test the pooled estimator at these widths")
     parser.add_argument("--extra", default="", help="extra rayrender arguments, e.g. --no_overlap_correction")
+    parser.add_argument("--scene_extra", default="", help="extra raycreate arguments, e.g. --min_gap 0.5")
     parser.add_argument("--stems_per_m2", default="", help="instead test random scenes of these stem densities")
     args = parser.parse_args()
     methods = METHODS
@@ -85,7 +86,8 @@ def main():
         if args.scenes not in scene:
             continue
         run(f"raycreate pneumatophores {args.seed} {scene_options} --diameter {args.diameter} --rays {args.rays} "
-            f"--footprint {args.footprint} --walk_spacing {args.walk_spacing} --truth_cells {args.cell_size}")
+            f"--footprint {args.footprint} --walk_spacing {args.walk_spacing} --truth_cells {args.cell_size} "
+            f"{args.scene_extra}")
         truth = {key(r): float(r["true_frontal_area_per_volume_Nd"]) for r in read("pneumatophores_truth_cells.csv")}
         print(f"\n== {scene}")
         print("method | sin zenith band | per layer from ground: bias, rel. RMSE, coverage")

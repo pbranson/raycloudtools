@@ -79,16 +79,20 @@ void PneumatophoreGen::generateStems(std::mt19937 &gen)
   };
   // stems as a fraction of ground area, at the (local) density stems_per_m2
   const double solid_fraction = p.stems_per_m2 * kPi * p.diameter * p.diameter / 4.0;
-  if (p.hard_core && solid_fraction > max_solid_fraction)
+  // stem centres are at least this far apart
+  const double separation = p.diameter * (1.0 + std::max(0.0, p.min_gap_ratio));
+  const double separation_scale = (separation / p.diameter) * (separation / p.diameter);
+  if (p.hard_core && solid_fraction * separation_scale > max_solid_fraction)
   {
     std::stringstream ss;
-    ss << "stems of diameter " << p.diameter << " m cannot be placed without overlap at " << p.stems_per_m2
-       << " per m^2: the solid fraction (N pi d^2 / 4) of " << solid_fraction << " exceeds " << max_solid_fraction
-       << ", near the random packing limit of 0.547. That is, at most "
-       << max_solid_fraction * 4.0 / (kPi * p.diameter * p.diameter) << " stems per m^2";
+    ss << "stems of diameter " << p.diameter << " m cannot be placed with gaps of at least " << p.min_gap_ratio
+       << " diameters at " << p.stems_per_m2 << " per m^2: the solid fraction (N pi d^2 / 4) of " << solid_fraction
+       << " exceeds " << max_solid_fraction / separation_scale
+       << " (for the exclusion discs, near the random packing limit of 0.547). That is, at most "
+       << max_solid_fraction * 4.0 / (kPi * separation * separation) << " stems per m^2";
     throw std::runtime_error(ss.str());
   }
-  StemHash hash(-half_field, 2.0 * half_field, p.diameter);
+  StemHash hash(-half_field, 2.0 * half_field, separation);
   // accepts a stem unless it overlaps an existing one (when hard_core)
   auto try_add = [&](const Eigen::Vector2d &pos) {
     if (p.hard_core && hash.overlaps(pos))

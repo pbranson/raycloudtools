@@ -40,6 +40,16 @@ bool RAYLIB_EXPORT splitGrid(const std::string &file_name, const std::string &cl
 bool RAYLIB_EXPORT splitGrid(const std::string &file_name, const std::string &cloud_name_stub,
                              const Eigen::Vector4d &cell_width, double overlap = 0.0);
 
+/// Split a ray cloud into square tiles for density estimation (e.g. with raydensity). Tile (i, j) covers
+/// [origin + i tile_width, origin + (i+1) tile_width) in x and y, and its file (suffix _i_j.ply) contains every ray
+/// that crosses the tile expanded by @c halo, within heights [min_z, max_z]. Unlike splitGrid, each ray keeps its
+/// original start point, so that its range from the scanner is kept (for the beam footprint). Its end is clipped to
+/// the expanded tile, and when clipped it is marked as unbounded (zero alpha), as the ray didn't stop within the tile.
+/// If @c num_tiles is positive, only tiles 0 to num_tiles - 1 in each axis are written (the domain).
+bool RAYLIB_EXPORT splitTiles(const std::string &file_name, const std::string &cloud_name_stub,
+                              const Eigen::Vector2d &origin, double tile_width, double halo, double min_z,
+                              double max_z, const Eigen::Vector2i &num_tiles = Eigen::Vector2i(0, 0));
+
 /// Split a ray cloud into one cloud per colour, ignoring differences in alpha. For example, when identified objects in
 /// the cloud are given a unique colour. 
 /// @p seg_colour is true if the output filename suffix is converted from colour to a unique ID, to match segmentation colours

@@ -43,6 +43,7 @@ set(PUBLIC_HEADERS
   rayprogressthread.h
   rayrandom.h
   rayrenderer.h
+  raydensity.h
   raypneumatophoregen.h
   rayroomgen.h
   raysplitter.h
@@ -95,6 +96,7 @@ set(SOURCES
   rayprogressthread.cpp
   rayrandom.cpp
   rayrenderer.cpp
+  raydensity.cpp
   raypneumatophoregen.cpp
   rayroomgen.cpp
   raysplitter.cpp

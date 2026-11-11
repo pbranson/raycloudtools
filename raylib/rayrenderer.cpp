@@ -16,6 +16,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <fstream>
+#include <memory>
 #include <random>
 #include <sstream>
 #include <unordered_map>
@@ -602,13 +603,15 @@ inline double uniform01(std::mt19937 &gen)
 }
 }  // namespace
 
-double freePathResponse(double solid_fraction, double width_ratio)
+double freePathResponse(double solid_fraction, double width_ratio, double min_gap_ratio)
 {
   if (solid_fraction <= 0.0)
   {
     return 1.0;
   }
-  solid_fraction = std::min(solid_fraction, 0.4);
+  min_gap_ratio = std::max(0.0, min_gap_ratio);
+  const double separation_scale = (1.0 + min_gap_ratio) * (1.0 + min_gap_ratio);
+  solid_fraction = std::min(solid_fraction, 0.4 / separation_scale);
   width_ratio = std::max(width_ratio, 1.0);
   // non-overlapping stems of unit diameter, placed by random sequential addition in a square
   const int num_stems = 1500;
@@ -616,8 +619,9 @@ double freePathResponse(double solid_fraction, double width_ratio)
   const double diameter = 1.0;
   const double side = std::sqrt(num_stems * kPi * diameter * diameter / (4.0 * solid_fraction));
   const double density = num_stems / (side * side);
-  std::mt19937 gen(12345);  // fixed seed, so the response is deterministic
-  const double cell = std::max(diameter, 0.5 * width_ratio * diameter);
+  std::mt19937 gen(12345);                                     // fixed seed, so the response is deterministic
+  const double separation = diameter * (1.0 + min_gap_ratio);  // minimum distance between stem centres
+  const double cell = std::max(separation, 0.5 * width_ratio * diameter);
   const int cells = std::max(1, static_cast<int>(std::ceil(side / cell)));
   std::vector<std::vector<Eigen::Vector2d>> buckets(static_cast<size_t>(cells * cells));
   auto bucket = [&](double x) { return std::min(cells - 1, std::max(0, static_cast<int>(x / cell))); };
@@ -643,7 +647,7 @@ double freePathResponse(double solid_fraction, double width_ratio)
   for (long long attempt = 0; static_cast<int>(stems.size()) < num_stems && attempt < 100000000LL; attempt++)
   {
     const Eigen::Vector2d pos(side * uniform01(gen), side * uniform01(gen));
-    if (!near(pos, diameter))
+    if (!near(pos, separation))
     {
       stems.push_back(pos);
       buckets[static_cast<size_t>(bucket(pos[0]) + cells * bucket(pos[1]))].push_back(pos);
@@ -699,7 +703,9 @@ double StemResponseTable::response(double solid_fraction, double width_ratio)
   // bilinear interpolation over a grid of solid fractions and width ratios, evaluated on demand
   static const std::vector<double> fractions = { 0.0, 0.01, 0.02, 0.04, 0.07, 0.1, 0.15, 0.2, 0.3, 0.4 };
   const double ratio_step = 0.25, max_ratio = 5.0;
-  solid_fraction = std::max(0.0, std::min(solid_fraction, fractions.back()));
+  // the table is over the solid fraction of the exclusion discs (diameter d (1 + gap)), which have the packing limit
+  const double separation_scale = (1.0 + min_gap_ratio_) * (1.0 + min_gap_ratio_);
+  solid_fraction = std::max(0.0, std::min(solid_fraction * separation_scale, fractions.back()));
   const double r = (std::max(1.0, std::min(width_ratio, max_ratio)) - 1.0) / ratio_step;
   const int r0 = std::min(static_cast<int>(r), static_cast<int>((max_ratio - 1.0) / ratio_step) - 1);
   size_t f0 = 0;
@@ -714,7 +720,8 @@ double StemResponseTable::response(double solid_fraction, double width_ratio)
     auto it = table_.find(key);
     if (it == table_.end())
     {
-      it = table_.emplace(key, freePathResponse(fractions[f], 1.0 + ratio_step * ri)).first;
+      it = table_.emplace(key, freePathResponse(fractions[f] / separation_scale, 1.0 + ratio_step * ri, min_gap_ratio_))
+             .first;
     }
     return it->second;
   };
@@ -782,7 +789,8 @@ void DensityGrid::applyOverlapCorrection()
         {
           // measured = a R(pi d a / 4, rho) for true density a = N d. Solve for a by bisection, as a R is increasing
           const double rho = k_path / path;  // path-weighted mean ratio of effective width to diameter
-          const double max_density = max_solid_fraction_ * 4.0 / (kPi * stem_diameter_);
+          const double max_density =
+            max_solid_fraction_ * 4.0 / (kPi * stem_diameter_ * (1.0 + min_gap_ratio_) * (1.0 + min_gap_ratio_));
           auto response = [&](double a) { return a * response_.response(0.25 * kPi * stem_diameter_ * a, rho); };
           double a = max_density;
           if (measured < response(max_density))
@@ -822,9 +830,11 @@ void DensityGrid::applyOverlapCorrection()
               << sum_k_path / sum_path << std::endl;
     if (num_saturated > 0)
     {
+      const double scale = (1.0 + min_gap_ratio_) * (1.0 + min_gap_ratio_);
       std::cout << "Warning: " << num_saturated << " voxels are beyond the maximum solid fraction ("
-                << max_solid_fraction_ << ") for " << stem_diameter_
-                << " m stems, of N*d = " << max_solid_fraction_ * 4.0 / (kPi * stem_diameter_)
+                << max_solid_fraction_ / scale << ") for " << stem_diameter_ << " m stems with gaps of "
+                << min_gap_ratio_
+                << " diameters, of N*d = " << max_solid_fraction_ * 4.0 / (kPi * stem_diameter_ * scale)
                 << " m^-1. Their densities are set to this limit. Check the stem diameter" << std::endl;
     }
   }
@@ -957,8 +967,8 @@ void DensityGrid::addNeighbourPriors()
 }
 
 /// The density of a voxel at valid (shifted) index x,y,z, as an average over the voxel
-static double voxelAverageDensity(const DensityGrid &grid, const DensityGrid::Voxel &voxel, int x, int y, int z,
-                                  const Eigen::Vector3i &full_dims, int shift)
+double voxelAverageDensity(const DensityGrid &grid, const DensityGrid::Voxel &voxel, int x, int y, int z,
+                           const Eigen::Vector3i &full_dims, int shift)
 {
   double d = voxel.density();
 #if defined FLAT_TOP_COMPENSATION
@@ -1108,6 +1118,77 @@ static bool writeDensityProfile(const std::string &file_name, const DensityGrid 
   return true;
 }
 
+std::unique_ptr<DensityGrid> estimateDensityGrid(const std::string &cloud_file, const Cuboid &bounds,
+                                                 double voxel_width, const Eigen::Vector3i &dims_in,
+                                                 const DensityOptions &options, int &shift)
+{
+  Eigen::Vector3i dims = dims_in;
+  Cuboid grid_bounds = bounds;
+  shift = 0;
+#if DENSITY_MIN_RAYS > 0
+  shift = 1;
+  dims += 2 * Eigen::Vector3i(shift, shift, shift);  // so that we have extra space to convolve
+  grid_bounds.min_bound_ -= Eigen::Vector3d(voxel_width, voxel_width, voxel_width);
+#endif
+  const bool cylinders = options.distribution == ElementDistribution::VerticalCylinder;
+  auto grid_ptr = std::make_unique<DensityGrid>(grid_bounds, voxel_width, dims, options.distribution,
+                                                cylinders ? options.min_sin_zenith : 0.0);
+  DensityGrid &grid = *grid_ptr;
+  grid.setPathEstimator(options.path_estimator);
+  grid.setPoolRadius(options.pool_radius);
+  grid.setMinGapRatio(options.min_gap_ratio);
+  if (cylinders)
+  {
+    grid.setMaxG(options.max_sin_zenith);
+  }
+  if (cylinders && options.stem_diameter > 0.0)
+  {
+    grid.setStemDiameter(options.stem_diameter);
+  }
+  if (cylinders && options.footprint.enabled())
+  {
+    if (options.stem_diameter <= 0.0)
+    {
+      std::cerr << "Error: the beam footprint correction requires the stem diameter" << std::endl;
+      return nullptr;
+    }
+    grid.setFootprint(options.footprint, options.stem_diameter);
+    std::cout << "correcting for beam footprint, effective stem width of " << options.stem_diameter << " m stems is "
+              << effectiveStemWidth(options.stem_diameter, options.footprint.diameter(1.0), options.footprint.threshold)
+              << " m at 1 m range, "
+              << effectiveStemWidth(options.stem_diameter, options.footprint.diameter(5.0), options.footprint.threshold)
+              << " m at 5 m range" << std::endl;
+  }
+
+#if defined FLAT_TOP_COMPENSATION
+  if (options.flat_top_compensation)  // without the peaks, no compensation is applied
+  {
+    grid.calculatePeaks(cloud_file);
+  }
+#endif
+  if (cylinders && options.overlap_correction && options.stem_diameter > 0.0)
+  {
+    grid.enableOverlapCorrection();
+  }
+  grid.calculateDensities(cloud_file);
+  if (grid.numIgnoredRays() > 0)
+  {
+    std::cout << grid.numIgnoredRays() << " rays ignored outside of the sin zenith angle range "
+              << options.min_sin_zenith << " to " << options.max_sin_zenith << std::endl;
+  }
+#if defined FLAT_TOP_COMPENSATION
+  if (options.flat_top_compensation)
+  {
+    grid.flatTopCompensation();
+  }
+#endif
+  grid.applyOverlapCorrection();
+#if DENSITY_MIN_RAYS > 0
+  grid.addNeighbourPriors();
+#endif
+  return grid_ptr;
+}
+
 bool renderCloud(const std::string &cloud_file, const Cuboid &bounds, ViewDirection view_direction, RenderStyle style,
                  double pix_width, const std::string &image_file, const std::string &projection_file, bool mark_origin,
                  const std::string *const transform_file, const DensityOptions &density_options)
@@ -1143,71 +1224,17 @@ bool renderCloud(const std::string &cloud_file, const Cuboid &bounds, ViewDirect
     // density calculation is a special case
     if (style == RenderStyle::Density || style == RenderStyle::Density_rgb)
     {
-      Eigen::Vector3i dims = (extent / pix_width).cast<int>() + Eigen::Vector3i(1, 1, 1);
-      Cuboid grid_bounds = bounds;
+      const Eigen::Vector3i valid_grid_dims = (extent / pix_width).cast<int>() + Eigen::Vector3i(1, 1, 1);
       int shift = 0;
-#if DENSITY_MIN_RAYS > 0
-      shift = 1;
-      dims += 2 * Eigen::Vector3i(shift, shift, shift);  // so that we have extra space to convolve
-      grid_bounds.min_bound_ -= Eigen::Vector3d(pix_width, pix_width, pix_width);
-#endif
+      std::unique_ptr<DensityGrid> grid_ptr =
+        estimateDensityGrid(cloud_file, bounds, pix_width, valid_grid_dims, density_options, shift);
+      if (!grid_ptr)
+      {
+        return false;
+      }
+      DensityGrid &grid = *grid_ptr;
+      const Eigen::Vector3i dims = valid_grid_dims + 2 * Eigen::Vector3i(shift, shift, shift);
       const bool cylinders = density_options.distribution == ElementDistribution::VerticalCylinder;
-      DensityGrid grid(grid_bounds, pix_width, dims, density_options.distribution,
-                       cylinders ? density_options.min_sin_zenith : 0.0);
-      grid.setPathEstimator(density_options.path_estimator);
-      grid.setPoolRadius(density_options.pool_radius);
-      if (cylinders)
-      {
-        grid.setMaxG(density_options.max_sin_zenith);
-      }
-      if (cylinders && density_options.stem_diameter > 0.0)
-      {
-        grid.setStemDiameter(density_options.stem_diameter);
-      }
-      if (cylinders && density_options.footprint.enabled())
-      {
-        if (density_options.stem_diameter <= 0.0)
-        {
-          std::cerr << "Error: the beam footprint correction requires the stem diameter" << std::endl;
-          return false;
-        }
-        grid.setFootprint(density_options.footprint, density_options.stem_diameter);
-        std::cout << "correcting for beam footprint, effective stem width of " << density_options.stem_diameter
-                  << " m stems is "
-                  << effectiveStemWidth(density_options.stem_diameter, density_options.footprint.diameter(1.0),
-                                        density_options.footprint.threshold)
-                  << " m at 1 m range, "
-                  << effectiveStemWidth(density_options.stem_diameter, density_options.footprint.diameter(5.0),
-                                        density_options.footprint.threshold)
-                  << " m at 5 m range" << std::endl;
-      }
-
-#if defined FLAT_TOP_COMPENSATION
-      if (density_options.flat_top_compensation)  // without the peaks, no compensation is applied
-      {
-        grid.calculatePeaks(cloud_file);
-      }
-#endif
-      if (cylinders && density_options.overlap_correction && density_options.stem_diameter > 0.0)
-      {
-        grid.enableOverlapCorrection();
-      }
-      grid.calculateDensities(cloud_file);
-      if (grid.numIgnoredRays() > 0)
-      {
-        std::cout << grid.numIgnoredRays() << " rays ignored outside of the sin zenith angle range "
-                  << density_options.min_sin_zenith << " to " << density_options.max_sin_zenith << std::endl;
-      }
-#if defined FLAT_TOP_COMPENSATION
-      if (density_options.flat_top_compensation)
-      {
-        grid.flatTopCompensation();
-      }
-#endif
-      grid.applyOverlapCorrection();
-#if DENSITY_MIN_RAYS > 0
-      grid.addNeighbourPriors();
-#endif
       if (!density_options.profile_file.empty())
       {
         // addNeighbourPriors shifts the voxel contents by -shift in each axis, so these are the valid dimensions,

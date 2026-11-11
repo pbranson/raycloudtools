@@ -7,6 +7,7 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <sstream>
 #include "extraction/rayforest.h"
 #include "raycloudwriter.h"
 #include "raycuboid.h"
@@ -445,6 +446,123 @@ bool splitGrid(const std::string &file_name, const std::string &cloud_name_stub,
     for (int i = 0; i < max_open_files; i++)
     {
       cells[i].end();  // has no effect on writers where begin has not been called
+    }
+  }
+  return true;
+}
+
+bool splitTiles(const std::string &file_name, const std::string &cloud_name_stub, const Eigen::Vector2d &origin,
+                double tile_width, double halo, double min_z, double max_z, const Eigen::Vector2i &num_tiles)
+{
+  if (tile_width <= 0.0 || halo < 0.0 || max_z <= min_z)
+  {
+    std::cerr << "Error: splitTiles requires a positive tile width, non-negative halo and max_z > min_z" << std::endl;
+    return false;
+  }
+  Cloud::Info info;
+  if (!Cloud::getInfo(file_name, info))
+  {
+    return false;
+  }
+  const double big = 1e7;
+  auto tile_index = [&](double x, int axis) { return static_cast<int>(std::floor((x - origin[axis]) / tile_width)); };
+  Eigen::Vector2i min_index(tile_index(info.rays_bound.min_bound_[0] - halo, 0),
+                            tile_index(info.rays_bound.min_bound_[1] - halo, 1));
+  Eigen::Vector2i max_index(tile_index(info.rays_bound.max_bound_[0] + halo, 0),
+                            tile_index(info.rays_bound.max_bound_[1] + halo, 1));
+  for (int axis = 0; axis < 2; axis++)
+  {
+    if (num_tiles[axis] > 0)  // limit to the domain
+    {
+      min_index[axis] = std::max(min_index[axis], 0);
+      max_index[axis] = std::min(max_index[axis], num_tiles[axis] - 1);
+    }
+  }
+  if ((max_index.array() < min_index.array()).any())
+  {
+    std::cerr << "Error: no rays cross the domain" << std::endl;
+    return false;
+  }
+  const Eigen::Vector2i dims = max_index - min_index + Eigen::Vector2i(1, 1);
+  const int length = dims[0] * dims[1];
+  std::cout << "splitting into a maximum of " << length << " tiles of width " << tile_width << " m" << std::endl;
+  if (length > 1000000)
+  {
+    std::cerr << "Error: over a million tiles is probably a mistake" << std::endl;
+    return false;
+  }
+  const Cuboid slab(Eigen::Vector3d(-big, -big, min_z), Eigen::Vector3d(big, big, max_z));
+  const int max_open_files = 256;
+  for (int pass = 0; pass < length; pass += max_open_files)
+  {
+    if (length > max_open_files)
+    {
+      std::cout << "pass " << 1 + pass / max_open_files << " / " << 1 + (length - 1) / max_open_files << std::endl;
+    }
+    std::vector<CloudWriter> writers(static_cast<size_t>(max_open_files));
+    std::vector<Cloud> chunks(static_cast<size_t>(max_open_files));
+    auto per_chunk = [&](std::vector<Eigen::Vector3d> &starts, std::vector<Eigen::Vector3d> &ends,
+                         std::vector<double> &times, std::vector<RGBA> &colours) {
+      for (size_t i = 0; i < ends.size(); i++)
+      {
+        // the part of the ray within the height range decides which tiles it may cross
+        Eigen::Vector3d s = starts[i], e = ends[i];
+        if (!slab.clipRay(s, e))
+        {
+          continue;
+        }
+        const int x0 = std::max(min_index[0], tile_index(std::min(s[0], e[0]) - halo, 0));
+        const int x1 = std::min(max_index[0], tile_index(std::max(s[0], e[0]) + halo, 0));
+        const int y0 = std::max(min_index[1], tile_index(std::min(s[1], e[1]) - halo, 1));
+        const int y1 = std::min(max_index[1], tile_index(std::max(s[1], e[1]) + halo, 1));
+        for (int x = x0; x <= x1; x++)
+        {
+          for (int y = y0; y <= y1; y++)
+          {
+            const int index = (x - min_index[0]) + dims[0] * (y - min_index[1]) - pass;
+            if (index < 0 || index >= max_open_files)
+            {
+              continue;
+            }
+            const Cuboid tile(
+              Eigen::Vector3d(origin[0] + x * tile_width - halo, origin[1] + y * tile_width - halo, min_z),
+              Eigen::Vector3d(origin[0] + (x + 1) * tile_width + halo, origin[1] + (y + 1) * tile_width + halo, max_z));
+            Eigen::Vector3d start = starts[i], end = ends[i];
+            if (!tile.clipRay(start, end))
+            {
+              continue;
+            }
+            RGBA colour = colours[i];
+            if ((end - ends[i]).squaredNorm() > 1e-12)
+            {
+              colour.alpha = 0;  // the ray didn't end within the tile
+            }
+            if (writers[static_cast<size_t>(index)].fileName().empty())
+            {
+              std::stringstream name;
+              name << cloud_name_stub << "_" << x << "_" << y << ".ply";
+              writers[static_cast<size_t>(index)].begin(name.str());
+            }
+            chunks[static_cast<size_t>(index)].addRay(starts[i], end, times[i], colour);  // keeps the original start
+          }
+        }
+      }
+      for (int i = 0; i < max_open_files; i++)
+      {
+        if (!chunks[static_cast<size_t>(i)].ends.empty())
+        {
+          writers[static_cast<size_t>(i)].writeChunk(chunks[static_cast<size_t>(i)]);
+          chunks[static_cast<size_t>(i)].clear();
+        }
+      }
+    };
+    if (!Cloud::read(file_name, per_chunk))
+    {
+      return false;
+    }
+    for (auto &writer : writers)
+    {
+      writer.end();
     }
   }
   return true;

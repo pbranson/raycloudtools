@@ -37,6 +37,10 @@ void usage(int exit_code = 1)
   std::cout << "                  grid wx,wy,wz 1        - same as above, but with a 1 metre overlap between cells." << std::endl;
   std::cout << "                  grid wx,wy,wz,wt       - splits into a grid of files, cell width wx,wy,wz and period wt. 0 for unused axes." << std::endl;
   std::cout << "                  capsule 1,2,3 5,8,12 7 - splits within a capsule using start, end and radius" << std::endl;
+  std::cout << "                  tiles 0,0 25 0.15 -1,2 - splits into 25 m tiles from origin 0,0 for raydensity, each with" << std::endl;
+  std::cout << "                                           all rays crossing it (+0.15 m halo) between heights -1 and 2," << std::endl;
+  std::cout << "                                           keeping ray start points. Files are named _i_j for tile i,j" << std::endl;
+  std::cout << "                  tiles 0,0 25 0.15 -1,2 12,12 - as above, only for tiles 0 to 11 in x and y (the domain)" << std::endl;
 // clang-format on
   exit(exit_code);
 }
@@ -56,6 +60,9 @@ int raySplit(int argc, char *argv[])
                              { &plane, &time, &colour, &single_colour, &alpha, &raydir, &range, &gap });
   ray::FileArgument mesh_file, tree_file;
   ray::TextArgument distance_text("distance"), time_text("time"), percent_text("%");
+  ray::Vector2dArgument tile_origin, tile_heights, tile_domain(1.0, 1e6);
+  ray::DoubleArgument tile_width(0.001, 1e6), tile_halo(0.0, 1e6);
+  ray::TextArgument tiles_text("tiles");
   ray::TextArgument box_text("box"), grid_text("grid"), colour_text("colour"), seg_colour_text("seg_colour"), capsule_text("capsule");
   ray::DoubleArgument mesh_offset;
   bool standard_format = ray::parseCommandLine(argc, argv, { &cloud_file, &choice }, { &view_flag });
@@ -66,11 +73,16 @@ int raySplit(int argc, char *argv[])
   bool grid_format = ray::parseCommandLine(argc, argv, { &cloud_file, &grid_text, &cell_width }, { &view_flag });
   bool grid_format2 = ray::parseCommandLine(argc, argv, { &cloud_file, &grid_text, &cell_width2 }, { &view_flag });
   bool grid_format3 = ray::parseCommandLine(argc, argv, { &cloud_file, &grid_text, &cell_width, &overlap }, { &view_flag });
+  bool tiles_format = ray::parseCommandLine(
+    argc, argv, { &cloud_file, &tiles_text, &tile_origin, &tile_width, &tile_halo, &tile_heights }, { &view_flag });
+  bool tiles_domain_format = ray::parseCommandLine(
+    argc, argv, { &cloud_file, &tiles_text, &tile_origin, &tile_width, &tile_halo, &tile_heights, &tile_domain },
+    { &view_flag });
   bool mesh_split = ray::parseCommandLine(argc, argv, { &cloud_file, &mesh_file, &distance_text, &mesh_offset }, { &view_flag });
   bool capsule_split =
     ray::parseCommandLine(argc, argv, { &cloud_file, &capsule_text, &capsule_start, &capsule_end, &capsule_radius }, { &view_flag });
   if (!standard_format && !colour_format && !seg_colour_format && !box_format && !grid_format && !grid_format2 && !grid_format3 &&
-      !mesh_split && !time_percent && !capsule_split)
+      !mesh_split && !time_percent && !capsule_split && !tiles_format && !tiles_domain_format)
   {
     usage();
   }
@@ -162,6 +174,18 @@ int raySplit(int argc, char *argv[])
   else if (grid_format2)  // this is a 3+1D grid (space and time)
   {
     res = ray::splitGrid(rc_name, cloud_file.nameStub(), cell_width2.value());
+  }
+  else if (tiles_domain_format)  // tiles for density estimation within a domain, keeping ray starts
+  {
+    res = ray::splitTiles(rc_name, cloud_file.nameStub(), tile_origin.value(), tile_width.value(), tile_halo.value(),
+                          tile_heights.value()[0], tile_heights.value()[1],
+                          Eigen::Vector2i(static_cast<int>(std::round(tile_domain.value()[0])),
+                                          static_cast<int>(std::round(tile_domain.value()[1]))));
+  }
+  else if (tiles_format)  // tiles for density estimation, keeping ray starts
+  {
+    res = ray::splitTiles(rc_name, cloud_file.nameStub(), tile_origin.value(), tile_width.value(), tile_halo.value(),
+                          tile_heights.value()[0], tile_heights.value()[1]);
   }
   else if (grid_format3)  // this is a 3D grid with a specified overlap
   {

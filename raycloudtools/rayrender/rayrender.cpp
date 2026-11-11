@@ -60,6 +60,8 @@ void usage(int exit_code = 1)
   std::cout << "                                             corrected for the stems' (widened) cross-sections" << std::endl;
   std::cout << "                     --pool_radius 0.05    - half-width (m) of the neighbourhood for --estimator pooled" << std::endl;
   std::cout << "                                             and the stem occlusion correction" << std::endl;
+  std::cout << "                     --min_gap 0           - minimum gap between stem surfaces (in stem diameters)" << std::endl;
+  std::cout << "                                             assumed by the stem occlusion correction" << std::endl;
   std::cout << "                     --no_overlap_correction - with --stem_diameter: don't correct for stems hiding" << std::endl;
   std::cout << "                                             each other (footprint overlap and within-voxel occlusion)" << std::endl;
   std::cout << "                     --no_flat_top         - for density styles: disable the flat canopy top model" << std::endl;
@@ -81,7 +83,7 @@ int rayRender(int argc, char *argv[])
   ray::DoubleArgument stem_diameter(0.0001, 10.0);
   ray::Vector3dArgument footprint(0.0, 1.0), min_bound(-1e10, 1e10), max_bound(-1e10, 1e10);
   ray::Vector3dArgument cell_size(0.0001, 1e6, Eigen::Vector3d(1.0, 1.0, 0.1));
-  ray::DoubleArgument max_sin_zenith(0.0, 1.0), pool_radius(0.0, 100.0);
+  ray::DoubleArgument max_sin_zenith(0.0, 1.0), pool_radius(0.0, 100.0), min_gap(0.0, 100.0);
   ray::FileArgument cells_file(false);
   ray::IntArgument resolution(1, 20000, 512);
   ray::FileArgument cloud_file, image_file, transform_file, projection_file(false), profile_file(false);
@@ -101,6 +103,7 @@ int rayRender(int argc, char *argv[])
   ray::OptionalKeyValueArgument cell_size_option("cell_size", 'l', &cell_size);
   ray::OptionalKeyValueArgument max_sin_zenith_option("max_sin_zenith", 'y', &max_sin_zenith);
   ray::OptionalKeyValueArgument pool_radius_option("pool_radius", 'q', &pool_radius);
+  ray::OptionalKeyValueArgument min_gap_option("min_gap", 'a', &min_gap);
   ray::OptionalKeyValueArgument stem_diameter_option("stem_diameter", 's', &stem_diameter);
   ray::OptionalKeyValueArgument footprint_option("footprint", 'b', &footprint);
   ray::OptionalKeyValueArgument min_bound_option("min_bound", 'n', &min_bound);
@@ -112,13 +115,14 @@ int rayRender(int argc, char *argv[])
           &density_model_option, &min_sin_zenith_option, &profile_file_option, &stem_diameter_option,
           &footprint_option,     &min_bound_option,      &max_bound_option,    &no_flat_top,
           &estimator_option,     &cells_option,          &cell_size_option,    &max_sin_zenith_option,
-          &no_overlap,           &pool_radius_option }))
+          &no_overlap,           &pool_radius_option,    &min_gap_option }))
   {
     usage();
   }
   ray::DensityOptions density_options;
   density_options.flat_top_compensation = !no_flat_top.isSet();
   density_options.overlap_correction = !no_overlap.isSet();
+  density_options.min_gap_ratio = min_gap.value();
   if (pool_radius_option.isSet())
   {
     density_options.pool_radius = pool_radius.value();

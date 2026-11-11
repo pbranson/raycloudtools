@@ -43,6 +43,7 @@ void usage(int exit_code = 1)
   std::cout << "             --footprint 0.01,0.003,0.05 - beam exit diameter (m), divergence (rad), detection threshold" << std::endl;
   std::cout << "             --rays 2000000         - number of rays" << std::endl;
   std::cout << "             --ground_returns       - keep ground returns as bounded rays (default: zero alpha)" << std::endl;
+  std::cout << "             --min_gap 0.5          - minimum gap between stem surfaces, in stem diameters (default 0)" << std::endl;
   std::cout << "             --overlapping          - independent (Poisson) stem positions, which may overlap, and a Poisson" << std::endl;
   std::cout << "                                      number of stems. Default: exact number of non-overlapping stems" << std::endl;
   std::cout << std::endl;
@@ -64,7 +65,7 @@ int rayCreate(int argc, char *argv[])
   ray::DoubleArgument stems_per_m2(0.01, 100000.0, 100.0), diameter(0.0001, 1.0, 0.01), spread(0.0, 100.0, 0.03);
   ray::IntArgument num_rays(1, 1000000000, 2000000);
   ray::Vector3dArgument footprint(0.0, 1.0), patchy(0.0, 1000.0), truth_cells(0.0001, 1000.0);
-  ray::DoubleArgument walk_spacing(0.01, 1000.0, 1.0);
+  ray::DoubleArgument walk_spacing(0.01, 1000.0, 1.0), min_gap(0.0, 100.0);
   ray::Vector2dArgument zenith(0.0, 180.0);
   ray::OptionalKeyValueArgument stems_option("stems_per_m2", 's', &stems_per_m2);
   ray::OptionalKeyValueArgument diameter_option("diameter", 'd', &diameter);
@@ -73,6 +74,7 @@ int rayCreate(int argc, char *argv[])
   ray::OptionalKeyValueArgument spread_option("cluster_spread", 'p', &spread);
   ray::OptionalKeyValueArgument patchy_option("patchy", 'a', &patchy);
   ray::OptionalKeyValueArgument walk_option("walk_spacing", 'w', &walk_spacing);
+  ray::OptionalKeyValueArgument min_gap_option("min_gap", 'm', &min_gap);
   ray::OptionalKeyValueArgument zenith_option("zenith", 'z', &zenith);
   ray::OptionalKeyValueArgument truth_cells_option("truth_cells", 't', &truth_cells);
   ray::OptionalFlagArgument clustered_flag("clustered", 'c'), ground_flag("ground_returns", 'g'),
@@ -80,7 +82,7 @@ int rayCreate(int argc, char *argv[])
   const std::vector<ray::OptionalArgument *> options = { &view_flag,     &stems_option,     &diameter_option,
                                                          &rays_option,   &footprint_option, &clustered_flag,
                                                          &ground_flag,   &spread_option,    &patchy_option,
-                                                         &walk_option,   &zenith_option,    &truth_cells_option, &overlapping_flag };
+                                                         &walk_option,   &zenith_option,    &truth_cells_option, &overlapping_flag, &min_gap_option };
   bool from_seed = ray::parseCommandLine(argc, argv, { &cloud_type, &seed }, options);
   bool from_file = ray::parseCommandLine(argc, argv, { &cloud_type, &input_file }, options);
   if (!from_seed && !from_file)
@@ -288,6 +290,7 @@ int rayCreate(int argc, char *argv[])
     params.lateral_spread = spread.value();
     params.walk_spacing = walk_spacing.value();
     params.hard_core = !overlapping_flag.isSet();
+    params.min_gap_ratio = min_gap.value();
     if (patchy_option.isSet())
     {
       params.patchy = true;

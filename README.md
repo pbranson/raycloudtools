@@ -201,7 +201,7 @@ This gives an example of how the command line tools could be sequenced to analys
 <img img width="320" src="https://raw.githubusercontent.com/csiro-robotics/raycloudtools/main/pics/rayrender_room_top_density_rgb.png?at=refs%2Fheads%2Fmaster"/>
 </p>
 
-By default density assumes a spherical (isotropic) distribution of leaf angles (G = 0.5), giving leaf area per volume. For vertical stem-like elements such as mangrove pneumatophores, use `--density_model vertical_cylinder`. This applies G = sin(zenith) to each ray, so density is the frontal area per volume N·d (stems per m² × diameter, in m⁻¹), and pixel values are the frontal area index N·d·h. `--profile profile.csv` writes the density per height layer. Ground returns should be removed first (e.g. `rayextract terrain`, then set ground rays to zero alpha), so that they are treated as unobstructed rays rather than hits.
+By default density assumes a spherical (isotropic) distribution of leaf angles (G = 0.5), giving leaf area per volume. For vertical stem-like elements such as mangrove pneumatophores, use `--density_model vertical_cylinder`. This applies G = sin(zenith) to each ray, so density is the frontal area per volume N·d (stems per m² × diameter, in m⁻¹), and pixel values are the frontal area index N·d·h. `--profile profile.csv` writes the density per height layer. Ground returns should be removed first (e.g. `rayextract terrain`, then set ground rays to zero alpha), so that they are treated as unobstructed rays rather than hits. On sloping ground, use `raydensity --ground` (below) for heights above ground, rather than flattening the cloud.
 
 For thin stems scanned by hand-held lidar, a typical command, giving densities for 1 x 1 x 0.1 m cells, is:
 
@@ -218,7 +218,18 @@ rayrender cloud.ply top density --density_model vertical_cylinder --estimator po
 * Ray angles: steep rays hit stem tops, which the model doesn't include, so they overestimate layers containing the tops (by about +10 to +15% with all ray angles). `--min_sin_zenith` and `--max_sin_zenith` select a band of angles.
 * In the profile, use the mean of the voxel densities rather than the pooled column when stems may be clustered: pooling across a layer underestimates clustered stems by 15-30%.
 
-`raycreate pneumatophores 1` generates a synthetic hand-held scan of a pneumatophore field, plus the true profile (`pneumatophores_truth.csv`), for testing these settings. Stems don't overlap, and their number is exact for the density (a solid fraction above 0.5 is refused); `--overlapping` instead gives independent (Poisson) positions. Options include `--clustered`, `--cluster_spread`, `--patchy`, `--stems_per_m2`, `--diameter`, `--footprint`, `--zenith`, `--walk_spacing` and `--truth_cells` (true cell densities). `scripts/pneumatophore_cell_study.py` evaluates cell estimates against the truth over scenes, estimators, voxel sizes and ray angles.
+* `--min_gap 0.5` tells the occlusion correction that stems are at least this many diameters apart (surface to surface). More regular spacing leaves less free space between the footprint-widened stems: in simulation, assuming no gap when stems are 1 diameter apart overestimates by about 23% at 1000 stems/m^2 (and up to 10% at 300 stems/m^2).
+
+**Large areas, and heights above sloping ground.** `raydensity` estimates one tile of a domain and writes its chunk of a Zarr store (readable by xarray, zarr-python and GDAL) of 3D cells, and optionally voxels. Tiles are independent, so they run in parallel, and they match a single run over the whole domain (to float rounding), as each tile uses the rays crossing a small halo around it:
+
+```console
+raysplit forest.ply tiles 400000,6100000 25 0.15 -10,50 12,12
+raydensity forest_3_7.ply forest.zarr --origin 400000,6100000 --tile_width 25 --tiles 12,12 --tile 3,7 --ground forest_mesh.ply --heights 0,0.6 --stem_diameter 0.01 --footprint 0.01,0.003,0.05
+```
+
+`scripts/raydensity_tiles.sh` runs both steps over all tiles in parallel. `raysplit ... tiles` keeps each ray's start point (unlike `raysplit ... grid`), as the footprint correction needs the range from the scanner. With `--ground`, each voxel is assigned to a layer by its height above the ground mesh beneath it. Don't flatten the cloud with `raytranslate subtract` instead: it shifts each whole ray by the ground height at its end, misplacing the rest of the ray by the slope times its horizontal length. In simulation on a 10% slope, flattening underestimated by 30-50%, while `--ground` matched flat ground to within 1%. See `docs/large_scale_density.md`.
+
+`raycreate pneumatophores 1` generates a synthetic hand-held scan of a pneumatophore field, plus the true profile (`pneumatophores_truth.csv`), for testing these settings. Stems don't overlap, and their number is exact for the density (a solid fraction above 0.5 is refused); `--min_gap 0.5` keeps stems at least half a diameter apart, and `--overlapping` instead gives independent (Poisson) positions. Options include `--clustered`, `--cluster_spread`, `--patchy`, `--stems_per_m2`, `--diameter`, `--footprint`, `--zenith`, `--walk_spacing` and `--truth_cells` (true cell densities). `scripts/pneumatophore_cell_study.py` evaluates cell estimates against the truth over scenes, estimators, voxel sizes and ray angles.
 
 **raytransients min room.ply 2 rays** &nbsp;&nbsp;&nbsp; Segment out moving or moved objects during the scan, when matter has been re-observed as missing by 2 or more rays.
 

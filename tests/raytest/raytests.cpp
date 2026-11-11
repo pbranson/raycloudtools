@@ -18,12 +18,14 @@
 #endif  // RAYLIB_WITH_TBB
 
 #include "raylib/raycloud.h"
+#include "raylib/raydensity.h"
 #include "raylib/rayforeststructure.h"
 #include "raylib/raylaz.h"
 #include "raylib/raymesh.h"
 #include "raylib/rayply.h"
 #include "raylib/raypneumatophoregen.h"
 #include "raylib/rayrenderer.h"
+#include "raylib/raysplitter.h"
 #include "raylib/raythreads.h"
 
 #include <fstream>
@@ -599,6 +601,118 @@ TEST(Basic, RayDensityStemPlacement)
   EXPECT_GE(std::sqrt(min_separation2), params.diameter);
   params.stems_per_m2 = 7000.0;  // solid fraction 0.55, beyond the packing limit
   EXPECT_THROW(gen.generate(params, 3), std::runtime_error);
+
+  // with a minimum gap of half a diameter, stem centres are at least 1.5 diameters apart
+  params.stems_per_m2 = 1000.0;
+  params.min_gap_ratio = 0.5;
+  gen.generate(params, 4);
+  EXPECT_EQ(static_cast<double>(gen.stems().size()), std::round(params.stems_per_m2 * field_width * field_width));
+  min_separation2 = std::numeric_limits<double>::max();
+  for (size_t i = 0; i < gen.stems().size(); i++)
+  {
+    for (size_t j = i + 1; j < gen.stems().size(); j++)
+    {
+      min_separation2 = std::min(min_separation2, (gen.stems()[i] - gen.stems()[j]).head<2>().squaredNorm());
+    }
+  }
+  EXPECT_GE(std::sqrt(min_separation2), 1.5 * params.diameter);
+  params.stems_per_m2 = 3000.0;  // 0.24 solid fraction, but 0.53 for the exclusion discs of 1.5 diameters
+  EXPECT_THROW(gen.generate(params, 3), std::runtime_error);
+}
+
+/// Reads a chunk of float32 values from a Zarr store
+std::vector<float> readZarrChunk(const std::string &file_name)
+{
+  std::ifstream ifs(file_name, std::ios::binary);
+  std::vector<float> data;
+  float value;
+  while (ifs.read(reinterpret_cast<char *>(&value), sizeof(float)))
+  {
+    data.push_back(value);
+  }
+  return data;
+}
+
+/// Density estimated over 2 x 2 tiles (split by raysplit tiles, keeping ray starts) matches a single run over the
+/// whole domain, as the halo gives each tile's voxels exactly the rays that a single run would
+TEST(Basic, RayDensityTiles)
+{
+  ray::PneumatophoreParams scene;
+  scene.plot_width = 2.0;
+  scene.margin = 3.0;
+  scene.num_rays = 300000;
+  scene.patchy = true;
+  scene.patch_radius = 0.3;
+  scene.patch_cover = 0.5;
+  scene.footprint.exit_diameter = 0.01;
+  scene.footprint.divergence = 0.003;
+  scene.footprint.threshold = 0.05;
+  ray::PneumatophoreGen gen;
+  gen.generate(scene, 9);
+  gen.cloud().save("tiles_test.ply");
+
+  ray::DensityTileParams params;
+  params.origin = Eigen::Vector2d(-1.0, -1.0);
+  params.cell_size = Eigen::Vector3d(0.5, 0.5, 0.1);
+  params.max_height = 0.4;
+  params.options.distribution = ray::ElementDistribution::VerticalCylinder;
+  params.options.path_estimator = ray::PathEstimator::PooledBeerLambert;
+  params.options.flat_top_compensation = false;
+  params.options.stem_diameter = scene.diameter;
+  params.options.footprint = scene.footprint;
+  const double halo = params.options.pool_radius + 2.0 * params.voxel_width;
+
+  // a single tile over the whole domain
+  params.tile_width = 2.0;
+  EXPECT_TRUE(ray::estimateDensityTile("tiles_test.ply", params, "tiles_single.zarr"));
+
+  // 2 x 2 tiles
+  EXPECT_TRUE(
+    ray::splitTiles("tiles_test.ply", "tiles_test", params.origin, 1.0, halo, -1.0, 2.0, Eigen::Vector2i(2, 2)));
+  params.tile_width = 1.0;
+  params.num_tiles = Eigen::Vector2i(2, 2);
+  for (int i = 0; i < 2; i++)
+  {
+    for (int j = 0; j < 2; j++)
+    {
+      params.tile = Eigen::Vector2i(i, j);
+      std::stringstream name;
+      name << "tiles_test_" << i << "_" << j << ".ply";
+      EXPECT_TRUE(ray::estimateDensityTile(name.str(), params, "tiles_split.zarr"));
+    }
+  }
+  // compare: the single chunk is (z, y, x) = (4, 4, 4) cells, each split chunk is (4, 2, 2)
+  const std::vector<float> single = readZarrChunk("tiles_single.zarr/density/0.0.0");
+  ASSERT_EQ(single.size(), 64u);
+  int compared = 0;
+  for (int i = 0; i < 2; i++)
+  {
+    for (int j = 0; j < 2; j++)
+    {
+      std::stringstream name;
+      name << "tiles_split.zarr/density/0." << j << "." << i;
+      const std::vector<float> tile = readZarrChunk(name.str());
+      ASSERT_EQ(tile.size(), 16u);
+      for (int z = 0; z < 4; z++)
+      {
+        for (int y = 0; y < 2; y++)
+        {
+          for (int x = 0; x < 2; x++)
+          {
+            const float a = tile[static_cast<size_t>(x + 2 * (y + 2 * z))];
+            const float b = single[static_cast<size_t>((x + 2 * i) + 4 * ((y + 2 * j) + 4 * z))];
+            EXPECT_EQ(std::isnan(a), std::isnan(b));
+            if (!std::isnan(a) && !std::isnan(b))
+            {
+              EXPECT_NEAR(a, b, 1e-4 * std::max(1.0f, std::abs(b)));
+              compared++;
+            }
+          }
+        }
+      }
+    }
+  }
+  EXPECT_GT(compared, 40);
 }
 
 /// End-to-end check on a synthetic hand-held scan of a random pneumatophore field with a finite beam footprint:

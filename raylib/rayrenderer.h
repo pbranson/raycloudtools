@@ -11,6 +11,7 @@
 #include "rayutils.h"
 
 #include <map>
+#include <memory>
 #define FLAT_TOP_COMPENSATION  // use a 2-medium model for the top of the cloud, so only the cloud's density is
                                // estimated, not the air above it
 
@@ -85,16 +86,22 @@ double RAYLIB_EXPORT effectiveStemWidth(double diameter, double beam_diameter, d
 /// width_ratio * d. It exceeds 1 because the free path excludes the stems' (widened) cross-sections, which leave less
 /// free space than if they overlapped (for which it is exactly 1). Paths start at random free points, as rays enter
 /// the stem layer at random points. Computed deterministically by a 2D Monte-Carlo simulation (fixed seed).
-double RAYLIB_EXPORT freePathResponse(double solid_fraction, double width_ratio);
+/// min_gap_ratio is the minimum gap between stem surfaces in stem diameters, so that stem centres are at least
+/// d (1 + min_gap_ratio) apart.
+double RAYLIB_EXPORT freePathResponse(double solid_fraction, double width_ratio, double min_gap_ratio = 0.0);
 
 /// Lookup of freePathResponse, interpolated over a grid of values that are computed when first needed
 class RAYLIB_EXPORT StemResponseTable
 {
 public:
+  explicit StemResponseTable(double min_gap_ratio = 0.0)
+    : min_gap_ratio_(min_gap_ratio)
+  {}
   double response(double solid_fraction, double width_ratio);
 
 private:
   std::map<std::pair<int, int>, double> table_;
+  double min_gap_ratio_;
 };
 
 /// Tabulated effective width of a stem of given diameter as a function of range, for fast lookup
@@ -173,6 +180,9 @@ struct RAYLIB_EXPORT DensityOptions
   /// sparse areas (about +6% at 30 stems/m^2 for 0.05 m, +3% for 0.1 m). Don't adapt it to the number of hits, as
   /// that is a stopping rule that biases the estimate high.
   double pool_radius = 0.05;
+  /// The minimum gap between stem surfaces assumed by the occlusion correction, in stem diameters (stem centres are
+  /// at least d (1 + min_gap_ratio) apart). More regular spacing leaves less free space between the widened stems.
+  double min_gap_ratio = 0.0;
   /// Model the top of the cloud as a sharp boundary between air and a uniform medium (e.g. a grass or crop
   /// canopy), so the air above the highest point in each column is excluded. Not suited to elements of varying
   /// height such as pneumatophores, where it biases the upper layers.
@@ -292,7 +302,7 @@ struct RAYLIB_EXPORT DensityGrid
   inline int getIndexFromPos(const Eigen::Vector3d &pos) const;
   /// Return the vector of density voxels
   inline const std::vector<Voxel> &voxels() const { return voxels_; }
-  inline Eigen::Vector3i dimensions() { return voxel_dims_; }
+  inline Eigen::Vector3i dimensions() const { return voxel_dims_; }
   inline Cuboid bounds() { return bounds_; }
   inline double voxelWidth() const { return voxel_width_; }
   inline ElementDistribution distribution() const { return distribution_; }
@@ -301,6 +311,12 @@ struct RAYLIB_EXPORT DensityGrid
   inline void setMaxG(double max_g) { max_g_ = max_g; }
   /// Half-width (m) of the horizontal neighbourhood for pooling and the occlusion correction
   inline void setPoolRadius(double radius) { pool_radius_ = radius; }
+  /// Minimum gap between stem surfaces (in stem diameters) assumed by the occlusion correction
+  inline void setMinGapRatio(double gap)
+  {
+    min_gap_ratio_ = gap;
+    response_ = StemResponseTable(gap);
+  }
   /// Accumulate the effective width ratio of each ray segment, for applyOverlapCorrection. Requires the stem diameter
   void enableOverlapCorrection();
   /// Pool the voxel densities over neighbourhoods (PooledBeerLambert), and correct them for the space occupied by the
@@ -351,6 +367,7 @@ private:
   std::vector<float> overlap_path_;  // per voxel, sum of the path-weighted overlap coefficient k of each segment
   StemResponseTable response_;       // free path response to the stems, for the occlusion correction
   double pool_radius_ = 0.05;
+  double min_gap_ratio_ = 0.0;
   static constexpr double max_solid_fraction_ = 0.4;
   Eigen::Vector3i hit_voxel_;  // voxel of the end point of the ray currently being walked
   double hit_length_ = 0.0;    // length (in voxels) to the end point of the ray currently being walked
@@ -468,5 +485,17 @@ inline bool DensityGrid::operator()(const Eigen::Vector3i &p, const Eigen::Vecto
   }
   return false;
 }
+/// Runs the density estimation pipeline (rays, occlusion correction and neighbour priors) on a grid of
+/// @c dims voxels of width @c voxel_width from bounds.min_bound_. The returned grid is padded by @c shift voxels each
+/// side, and its contents are shifted by -shift, so that after this call voxel (x, y, z) for 0 <= x < dims[0] etc.
+/// covers bounds.min_bound_ + voxel_width * [x, x+1] etc. Returns nullptr on error.
+RAYLIB_EXPORT std::unique_ptr<DensityGrid> estimateDensityGrid(const std::string &cloud_file, const Cuboid &bounds,
+                                                               double voxel_width, const Eigen::Vector3i &dims,
+                                                               const DensityOptions &options, int &shift);
+
+/// The density of the voxel at (shifted) index x, y, z of a grid from estimateDensityGrid, as an average over the
+/// voxel (scaling the top voxel of each column when flat top compensation was used). full_dims is grid.dimensions()
+double RAYLIB_EXPORT voxelAverageDensity(const DensityGrid &grid, const DensityGrid::Voxel &voxel, int x, int y, int z,
+                                         const Eigen::Vector3i &full_dims, int shift);
 }  // namespace ray
 #endif  // RAYLIB_RAYRENDERER_H

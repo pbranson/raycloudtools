@@ -29,6 +29,10 @@ struct RAYLIB_EXPORT PneumatophoreParams
   // and the number of stems is Poisson distributed. Hard-core stems limit the solid fraction N pi d^2 / 4 to the
   // random packing limit of about 0.547
   bool hard_core = true;
+  /// When hard_core: the minimum gap between neighbouring stems' surfaces, as a ratio of the stem diameter, so stem
+  /// centres are at least d (1 + min_gap_ratio) apart. This limits the solid fraction to
+  /// max_solid_fraction / (1 + min_gap_ratio)^2
+  double min_gap_ratio = 0.0;
 
   // spatial arrangement. Random places stems uniformly at random over the ground. Clustered places stems along
   // cable roots radiating from trees, with the same mean density
