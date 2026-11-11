@@ -61,7 +61,19 @@ std::string jsonString(const std::string &text)
     {
       ss << "\\n";
     }
-    else if (static_cast<unsigned char>(c) >= 0x20)
+    else if (c == '\t')
+    {
+      ss << "\\t";
+    }
+    else if (c == '\r')
+    {
+      ss << "\\r";
+    }
+    else if (static_cast<unsigned char>(c) < 0x20)
+    {
+      ss << "\\u00" << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(c) << std::dec;
+    }
+    else
     {
       ss << c;
     }
