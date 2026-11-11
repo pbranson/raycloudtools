@@ -34,6 +34,20 @@ struct RAYLIB_EXPORT PneumatophoreParams
   HeightDistribution height_distribution = HeightDistribution::Normal;
   double min_height = 0.1;  // for the uniform height distribution (m)
   double max_height = 0.4;  // for the uniform height distribution (m)
+  /// The distribution of stem diameters. Fixed: every stem has diameter. LogNormal: log-normal with mean diameter and
+  /// standard deviation diameter_sd, redrawn outside 0.1 mm to 3 diameter and rounded to 0.1 mm. Mixture: a fraction
+  /// mixture_fraction of the stems has diameter mixture_diameter, and the rest diameter. The truth outputs use each
+  /// stem's own diameter (N d is the sum of the diameters per unit area)
+  enum class DiameterDistribution
+  {
+    Fixed,
+    LogNormal,
+    Mixture
+  };
+  DiameterDistribution diameter_distribution = DiameterDistribution::Fixed;
+  double diameter_sd = 0.0;       // for the log-normal diameter distribution (m)
+  double mixture_diameter = 0.0;  // the second diameter of the mixture (m)
+  double mixture_fraction = 0.0;  // the fraction of stems with the second diameter
 
   // Stems are placed without overlapping each other (a hard-core process, by random sequential addition), with the
   // exact number of stems for the density. Otherwise stem positions are independent (Poisson), so stems may overlap
@@ -104,6 +118,8 @@ public:
 
   /// The stems, as x, y, height
   inline const std::vector<Eigen::Vector3d> &stems() const { return stems_; }
+  /// The diameter of each stem (m), in the order of stems()
+  std::vector<double> stemDiameters() const;
   /// The trunks, as x, y, diameter
   inline const std::vector<Eigen::Vector3d> &trunks() const { return trunks_; }
   /// The trunks as a .csv file of x, y, diameter
@@ -126,8 +142,14 @@ public:
 
 private:
   void generateStems(std::mt19937 &gen);
+  /// the diameter of stem i
+  inline double stemDiameter(size_t i) const { return class_diameters_[static_cast<size_t>(stem_classes_[i])]; }
   PneumatophoreParams params_;
   std::vector<Eigen::Vector3d> stems_;
+  // stems are in classes of one diameter each, with the effective width model of that diameter
+  std::vector<int> stem_classes_;             // per stem, the index of its diameter class
+  std::vector<double> class_diameters_;       // the diameter of each class
+  std::vector<StemWidthModel> class_widths_;  // the effective width model of each class
   std::vector<Eigen::Vector3d> trunks_;
   Cloud cloud_;
   // bucket grid of stem indices, for accelerating ray intersection
@@ -136,7 +158,6 @@ private:
   double field_min_ = 0.0;
   int num_buckets_ = 0;
   double max_height_ = 0.0;
-  StemWidthModel stem_width_;
 };
 }  // namespace ray
 
