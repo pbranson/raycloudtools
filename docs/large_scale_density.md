@@ -44,19 +44,23 @@ ground model  ->  ray binning into tiles (+ halo)  ->  per-tile density (paralle
 * A global origin and voxel width w (e.g. 5 cm) define the voxel lattice. Output cells (e.g. 1 x 1 x 0.1 m) and
   tiles (e.g. 25 x 25 m) are integer multiples of w, aligned to the same origin, so every voxel belongs to exactly
   one cell and one tile, with no resampling at tile edges.
-* Each tile is processed with its bounds expanded by a halo h >= pool_radius + 2w (the pooled neighbourhood, plus
-  two voxels for the neighbour prior), 0.15 m by default (`raydensity` rejects a smaller `--halo`). Only the tile's
+* Each tile is processed with its bounds expanded by a halo h >= max(pool_radius, occlusion_radius) + 2w (the pooled
+  neighbourhood, or the occlusion neighbourhood when `--occlusion_radius` is larger, plus two voxels for the
+  neighbour prior), 0.15 m by default (`raydensity` rejects a smaller `--halo`). Only the tile's
   core is output. With the halo, a tile's core voxels receive exactly the same rays, in the same order, as in a
   single global run, so the result is identical to float rounding: tiles have no seams and need no blending.
 * The pooled neighbourhood is (2k+1) x (2k+1) voxels with k = round(pool_radius / w), i.e. +-(k + 1/2) w: +-0.075 m
   for the default pool_radius 0.05 at 5 cm voxels. A wider window (0.1: +-0.125 m, halo 0.2 m) reduces the
   self-shadowing bias of `density` (about +0.47 d_eff / window width: +6-8% at the default, +2-4% with 0.1, for 1 cm
   stems), but reads lower where stems are patchy or clustered at a smaller scale (cable roots: 0.87 with the default,
-  0.77 with 0.1). The default is recommended (see the report, sections 8.1 and 8.6). `--self_shadow_correction`
-  removes the self-shadowing bias for fairly uniform stands, but is off by default, as it makes patches and cable
-  roots read low (report, sections 8.1 and 10). It needs `--stem_diameter` (and the pooled estimator, the default):
-  `raydensity` doesn't check this, and without them the option has no effect but is still recorded. It doesn't
-  change the halo.
+  0.77 with 0.1). `--self_shadow_correction` removes the self-shadowing bias for uniform stands, but is off by
+  default, as it makes patches and cable roots read low (report, sections 8.1 and 10). It needs `--stem_diameter`
+  and the pooled estimator (the default), and `raydensity` refuses it otherwise. It doesn't change the halo. For
+  clustered stands whose lower layers are well observed, the experimental single-voxel configuration (`--pool_radius
+  0 --self_shadow_correction --self_shadow_second_order --occlusion_radius 0.05 --ratio_bias_correction
+  --no_neighbour_priors`; report, section 8.1.2) resolves root lines and patches; there the halo is set by the
+  occlusion radius, 0.15 m at 5 cm voxels, as by default. A hybrid that chooses between the two per cell is in
+  development.
 * `raydensity`'s voxel grid covers the halo (rounded up to whole voxels) plus one more voxel. The split (step 2)
   must cover that grid with some margin, so that the ray ends it clips lie outside the grid: split with a halo 1.5
   voxels larger, 0.225 m by default (`scripts/raydensity_tiles.sh` does this). A split halo equal to the
@@ -141,16 +145,18 @@ mesh triangles overlapping the tile and its halo are used, so one mesh for the w
   half the truth where stems are patchy within the cell, and low where the density falls with height),
   `patchiness_ratio` (density / pooled_density: 1.03-1.09 for random stems in the lowest 0.2 m, 1.6-2.4 for patches
   and cable roots), `solid_fraction` (N pi d^2 / 4 from `density`), `hits`, `weighted_path` and `observed_fraction`
-  (the fraction of the cell's voxels with more than 2 rays after the neighbour top-up; cells below about 0.9 read
-  low) (float32; unobserved cells are NaN, with `observed_fraction` 0), plus coordinates `x`,
+  (the fraction of the cell's voxels with more than 2 rays after the neighbour top-up, or without it with
+  `--no_neighbour_priors`; cells below 0.9 read low, and should be masked: a mask is planned) (float32; unobserved cells are NaN, with `observed_fraction` 0), plus coordinates `x`,
   `y`, `z` (cell centres, float64, so that georeferenced coordinates are exact). With `--voxels`, also
   `voxel_density` on (zv, yv, xv) as heights above ground (6000 x 6000 x 12 float32, 1.7 GB, for 3D inspection). Not
   yet output: the mean d_eff / d, and a flag for cells at the solid fraction limit.
 * Attributes (`.zattrs` of the group): title, quantity, density_model, origin, tile_width, num_tiles,
   voxel_width, cell_size, height_range, heights_above_ground, voxels, stem_diameter, footprint, return_range,
   estimator, pool_radius, min_gap_ratio, min_sin_zenith, max_sin_zenith, occlusion_correction and
-  flat_top_compensation, plus `"self_shadow_correction": true` when that option is set (absent otherwise, so stores
-  written without it are unchanged; tiles run with and without it can't share a store). Not yet written: the CRS
+  flat_top_compensation, plus entries written only when the corresponding option is set, so that stores written
+  without them are unchanged: `"self_shadow_correction": true`, `"self_shadow_second_order": true`,
+  `"occlusion_radius": <m>`, `"ratio_bias_correction": true` and `"neighbour_priors": false` (for
+  `--no_neighbour_priors`). Tiles run with different options can't share a store. Not yet written: the CRS
   (the coordinates are in the cloud's frame) and the software version. The per-tile command lines are in `tiles/i_j.json`.
 * Because `density` is a mean of voxel values, and `observed_fraction`, `hits` and `weighted_path` are also stored,
   coarser cells (e.g. 5 m for a larger model domain) can be aggregated from the store: `pooled_density` from the
