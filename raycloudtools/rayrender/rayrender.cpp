@@ -74,7 +74,7 @@ void usage(int exit_code = 1)
   std::cout << "                                             each other (footprint overlap and within-voxel occlusion)" << std::endl;
   std::cout << "                     --self_shadow_correction - with --estimator pooled and --stem_diameter: correct the" << std::endl;
   std::cout << "                                             neighbourhoods for the shadow each stem casts within its own" << std::endl;
-  std::cout << "                                             neighbourhood (experimental; the mean density reads high without)" << std::endl;
+  std::cout << "                                             neighbourhood (the mean density reads high without)" << std::endl;
   std::cout << "                     --self_shadow_second_order - with --self_shadow_correction: the second-order factor," << std::endl;
   std::cout << "                                             for small neighbourhoods (e.g. --pool_radius 0)" << std::endl;
   std::cout << "                     --occlusion_radius 0.05 - with --estimator pooled: invert the stem occlusion correction" << std::endl;
@@ -90,9 +90,9 @@ void usage(int exit_code = 1)
   std::cout << "                                             --no_neighbour_priors" << std::endl;
   std::cout << "                     --hybrid              - with --self_shadow_correction: each cell takes the single-voxel" << std::endl;
   std::cout << "                                             configuration above where it observes at least 0.9 of the" << std::endl;
-  std::cout << "                                             cell's voxels, otherwise the pool_radius estimate (experimental," << std::endl;
-  std::cout << "                                             for clustered stems; adds a hybrid_weight column). Computed in" << std::endl;
-  std::cout << "                                             the same pass. Not with the single-voxel options above" << std::endl;
+  std::cout << "                                             cell's voxels, otherwise the pool_radius estimate (recommended" << std::endl;
+  std::cout << "                                             for range and pose error up to ~1 cm; adds a hybrid_weight column)." << std::endl;
+  std::cout << "                                             Computed in the same pass. Not with the single-voxel options above" << std::endl;
   std::cout << "                     --min_observed_fraction 0.9 - in --cells and --profile, the density, pooled density" << std::endl;
   std::cout << "                                             and patchiness are nan where the observed fraction is below" << std::endl;
   std::cout << "                                             this (default 0: none; 0.9 is recommended for stems)" << std::endl;

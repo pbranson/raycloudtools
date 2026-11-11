@@ -38,7 +38,7 @@ void usage(int exit_code = 1)
   std::cout << "                     --no_overlap_correction, --self_shadow_correction - as for rayrender" << std::endl;
   std::cout << "                     --self_shadow_second_order, --occlusion_radius 0.05, --ratio_bias_correction," << std::endl;
   std::cout << "                     --no_neighbour_priors - as for rayrender (experimental single-voxel neighbourhoods)" << std::endl;
-  std::cout << "                     --hybrid              - with --self_shadow_correction: as for rayrender (experimental), adds" << std::endl;
+  std::cout << "                     --hybrid              - with --self_shadow_correction: as for rayrender (recommended), adds" << std::endl;
   std::cout << "                                             the hybrid_weight array" << std::endl;
   std::cout << "                     --min_observed_fraction 0.9 - density, pooled_density, patchiness_ratio and solid_fraction" << std::endl;
   std::cout << "                                             are NaN in cells observed less than this (default 0: none;" << std::endl;
