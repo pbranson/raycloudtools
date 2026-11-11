@@ -8,8 +8,8 @@ Run in an empty working directory.
 
 For each scene and seed, reports estimate / truth summed over the 1 x 1 m cells of each 0.1 m layer, and the
 relative RMSE of the cells; then the mean and standard deviation over seeds. Both cell estimates are evaluated: the
-density pooled over the cell's voxels (density_..., the main output) and the mean of the voxel densities
-(mean_voxel_density_...), with their ratio (patchiness_ratio, the mean over the layer's cells).
+mean of the voxel densities (density_..., the main output) and the density pooled over the cell's voxels
+(pooled_density_...), with their ratio (patchiness_ratio, the mean over the layer's cells).
 """
 import argparse
 import concurrent.futures
@@ -21,7 +21,7 @@ import numpy as np
 
 FOOTPRINT = "0.01,0.003,0.05"
 # the cells file's estimates: pooled over the cell's voxels, and the mean of the voxel densities
-COLUMNS = {"pooled": "density_", "mean": "mean_voxel_density_"}
+COLUMNS = {"pooled": "pooled_density_", "mean": "density_"}
 SCENES = {"random 100/m2": "--stems_per_m2 100", "random 300/m2": "--stems_per_m2 300",
           "random 1000/m2": "--stems_per_m2 1000", "patches r 0.3 m, 300/m2": "--stems_per_m2 300 --patchy 0.3,0.4,0"}
 

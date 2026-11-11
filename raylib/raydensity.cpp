@@ -391,9 +391,11 @@ bool estimateDensityTile(const std::string &cloud_file, const DensityTileParams 
   };
   // the order of the outputs is that of the chunk data below
   std::vector<Output> outputs = {
-    { "density", "total (corrected) hits / total weighted path length over the cell's observed voxels", {} },
-    { "mean_voxel_density", "mean of the observed voxel densities in the cell", {} },
-    { "patchiness_ratio", "mean_voxel_density / density, above 1 where the density varies within the cell", {} },
+    { "density", "mean of the observed voxel densities in the cell", {} },
+    { "pooled_density",
+      "total (corrected) hits / total weighted path length over the cell's observed voxels (too low where patchy)",
+      {} },
+    { "patchiness_ratio", "density / pooled_density, above 1 where the density varies within the cell", {} },
     { "hits", "sum of (corrected) hits over the observed voxels", {} },
     { "weighted_path", "sum of the G-weighted path lengths (m) over the observed voxels", {} },
     { "observed_fraction", "fraction of the cell's voxels with enough rays for an estimate", {} }
@@ -584,7 +586,7 @@ bool estimateDensityTile(const std::string &cloud_file, const DensityTileParams 
       continue;
     }
     outputs[0].data[c] = static_cast<float>(cell.density());
-    outputs[1].data[c] = static_cast<float>(cell.meanVoxelDensity());
+    outputs[1].data[c] = static_cast<float>(cell.pooledDensity());
     outputs[2].data[c] = static_cast<float>(cell.patchinessRatio());
     outputs[3].data[c] = static_cast<float>(cell.hits);
     outputs[4].data[c] = static_cast<float>(cell.weighted_path);

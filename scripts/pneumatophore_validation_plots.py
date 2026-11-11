@@ -50,8 +50,8 @@ def read_csv(name):
         return list(csv.DictReader(f))
 
 
-# the column of the cells and profile files to plot: the density pooled over each cell's (or layer's) voxels, or with
-# --mean, the mean of the voxel densities
+# the column of the cells and profile files to plot: the mean of each cell's (or layer's) voxel densities (the main
+# output), or with --pooled, the density pooled over its voxels
 COLUMN = "density_"
 
 
@@ -337,12 +337,14 @@ def fig_profiles(scenes):
 
 def fig_methods():
     densities = [30, 100, 300, 600, 1000, 1500]
-    # the cells' columns: density_ is pooled over the cell's voxels, mean_voxel_density_ the mean of the voxels
-    methods = {"pooled, occlusion corrected (recommended)": ("pooled", "", "density_", BLUE),
-               "pooled, occlusion corrected, mean of voxels": ("pooled", "", "mean_voxel_density_", INK2),
-               "pooled, no occlusion correction": ("pooled", "--no_overlap_correction", "density_", VIOLET),
-               "crossing (no correction), mean of voxels": ("crossing", "", "mean_voxel_density_", ORANGE),
-               "single 1×1×0.1 m beer_lambert voxel": ("beer_lambert", "--no_overlap_correction", "density_", AQUA)}
+    # the cells' columns: density_ is the mean of the cell's voxel densities (the main output), pooled_density_ is
+    # pooled over the cell's voxels (path weighted)
+    methods = {"pooled estimator, occlusion corrected (recommended)": ("pooled", "", "density_", BLUE),
+               "pooled estimator, occlusion corrected, cell pooled": ("pooled", "", "pooled_density_", INK2),
+               "pooled estimator, no occlusion correction": ("pooled", "--no_overlap_correction", "density_", VIOLET),
+               "crossing (no correction)": ("crossing", "", "density_", ORANGE),
+               "single 1×1×0.1 m beer_lambert voxel": ("beer_lambert", "--no_overlap_correction", "pooled_density_",
+                                                       AQUA)}
     results = {m: [] for m in methods}
     os.makedirs("density_sweep", exist_ok=True)
     cwd = os.getcwd()
@@ -386,11 +388,11 @@ def fig_methods():
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--models", default="", help="csv of printed effective width and response models")
-    parser.add_argument("--mean", action="store_true",
-                        help="plot the mean of the voxel densities in each cell and layer, rather than the pooled density")
+    parser.add_argument("--pooled", action="store_true",
+                        help="plot the density pooled over each cell's and layer's voxels, rather than their mean")
     args = parser.parse_args()
     global COLUMN
-    COLUMN = "mean_voxel_density_" if args.mean else "density_"
+    COLUMN = "pooled_density_" if args.pooled else "density_"
     scenes = {"dense random": scene("dense_random", "--stems_per_m2 300"),
               "patches (r 0.5 m, 30% cover)": scene("patches", "--stems_per_m2 300 --patchy 0.5,0.3,0"),
               "cable roots": scene("cable_roots", "--stems_per_m2 150 --clustered --cluster_spread 0.03")}

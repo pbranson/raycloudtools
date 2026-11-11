@@ -50,8 +50,8 @@ def main():
         for width in [float(w) for w in args.widths.split(",")]:
             run(f"rayrender pneumatophores.ply top density --pixel_width {width} {render}")
             profile = read("profile.csv")
-            pooled = [k for k in profile[0] if k.startswith("density_")][0]
-            mean = [k for k in profile[0] if k.startswith("mean_voxel_density_")][0]
+            pooled = [k for k in profile[0] if k.startswith("pooled_density_")][0]
+            mean = [k for k in profile[0] if k.startswith("density_")][0]
             # unobserved layers are nan, and contribute nothing
             mean_fai = sum(float(r[mean]) * width for r in profile if r[mean] != "nan")
             pooled_fai = sum(float(r[pooled]) * width for r in profile if r[pooled] != "nan")

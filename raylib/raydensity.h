@@ -92,10 +92,10 @@ struct RAYLIB_EXPORT DensityTileParams
 /// The store's metadata, identical for every tile, is written first. If the store already has metadata that differs
 /// (it was written with different parameters), the tile fails without writing. Output arrays on dimensions (z, y, x)
 /// of cells, with float64 coordinates x, y (cell centres) and z (cell centre height), from aggregateDensityCells:
-///   density: pooled over the cell's observed voxels, total (corrected) hits over total weighted path (N d for
-///     vertical_cylinder, in m^-1)
-///   mean_voxel_density: the mean of the observed voxel densities in the cell
-///   patchiness_ratio: mean_voxel_density / density, above 1 where the density varies within the cell
+///   density: the mean of the observed voxel densities in the cell (N d for vertical_cylinder, in m^-1)
+///   pooled_density: total (corrected) hits over total weighted path over the cell's observed voxels; accurate for
+///     uniform stems but much too low where stems are patchy within the cell
+///   patchiness_ratio: density / pooled_density, above 1 where the density varies within the cell
 ///   hits, weighted_path: the sums over the cell's observed voxels
 ///   observed_fraction: the fraction of the cell's voxels with enough rays for an estimate
 ///   solid_fraction: N pi d^2 / 4 for N d = density, when a stem diameter is given

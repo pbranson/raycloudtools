@@ -108,8 +108,8 @@ def main():
     parser.add_argument("--trunks", default="0.1,0.2", help="trunks per m^2 and mean diameter (m)")
     parser.add_argument("--seed", type=int, default=31)
     parser.add_argument("--margin", type=float, default=0.015, help="beyond the fitted trunk circle (m)")
-    parser.add_argument("--mean", action="store_true",
-                        help="use the mean of the voxel densities in each cell, rather than the pooled density")
+    parser.add_argument("--pooled", action="store_true",
+                        help="use the density pooled over each cell's voxels, rather than their mean (the main output)")
     args = parser.parse_args()
     run(f"raycreate pneumatophores {args.seed} --stems_per_m2 {args.stems_per_m2} --trunks {args.trunks} "
         f"--footprint {FOOTPRINT} --truth_cells 1,1,0.1")
@@ -127,7 +127,7 @@ def main():
     is_trunk = (data["red"] == 150) & (data["green"] == 110)
     is_stem = (data["red"] == 40) & (data["green"] == 160) & (data["alpha"] > 0)
 
-    column = "mean_voxel_density_" if args.mean else "density_"
+    column = "pooled_density_" if args.pooled else "density_"
     est_a = estimate("pneumatophores.ply", "cells_a.csv", column)
     masked = data.copy()
     masked["alpha"][is_trunk] = 0

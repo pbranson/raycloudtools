@@ -194,6 +194,10 @@ struct RAYLIB_EXPORT DensityGrid
   /// To void low-ray-count voxels giving unstable density estimates, we fuse with neighbour information
   /// up to a specified minimum number of rays. Specified in DENSITY_MIN_RAYS
   void addNeighbourPriors();
+  /// Whether addNeighbourPriors also fills voxels that no ray reached (true, the original behaviour). When false,
+  /// those voxels stay unobserved, so voxels beyond the scanned volume (e.g. below the ground) aren't reported with
+  /// their neighbours' densities
+  inline void setFillUnobservedPriors(bool fill) { fill_unobserved_priors_ = fill; }
   /// Note, for performance, this index function does not check that the specified indices are in valid bounds.
   /// It is up to the calling function to assure this condition
   inline int getIndex(const Eigen::Vector3i &inds) const;
@@ -272,7 +276,8 @@ private:
   double stem_diameter_ = 0.0;       // optional mean stem diameter
   std::vector<float> overlap_path_;  // per voxel, sum over segments of rho * (G rho L), rho = effective width / d
   bool range_to_outline_ = false;    // the return range convention (BeamFootprint::range_to_outline)
-  bool pooled_densities_ = false;    // whether applyOverlapCorrection has pooled the voxels
+  bool fill_unobserved_priors_ = true;
+  bool pooled_densities_ = false;  // whether applyOverlapCorrection has pooled the voxels
   double pool_radius_ = 0.05;
   double min_gap_ratio_ = 0.0;
   static constexpr double max_solid_fraction_ = 0.4;
@@ -438,25 +443,27 @@ struct RAYLIB_EXPORT DensityCell
   double density_sum = 0.0;
   int observed = 0;  // number of observed voxels
   int total = 0;     // number of voxels in the cell
-  /// The cell's density, pooled over its observed voxels: hits / weighted_path. This is the weighted_path-weighted
-  /// mean of the voxels' hits / path, i.e. of the (neighbourhood-pooled and corrected) voxel densities without the
-  /// per-voxel small-sample factor. NaN when no voxel is observed
+  /// The cell's density: the mean of its observed voxel densities (each voxel weighted equally, so by volume). NaN
+  /// when no voxel is observed. This is the main output: it represents patchy cells correctly, but averaging noisy
+  /// voxel ratios biases it high by a few percent where neighbourhoods have few hits
   inline double density() const
-  {
-    return observed > 0 && weighted_path > 0.0 ? hits / weighted_path : std::numeric_limits<double>::quiet_NaN();
-  }
-  /// The mean of the observed voxel densities. NaN when no voxel is observed
-  inline double meanVoxelDensity() const
   {
     return observed > 0 ? density_sum / static_cast<double>(observed) : std::numeric_limits<double>::quiet_NaN();
   }
-  /// meanVoxelDensity / density, which exceeds 1 where the density varies within the cell, as the path-weighted
-  /// density gives less weight to the denser voxels, which rays penetrate less. NaN when either is NaN, or the
-  /// density is 0
+  /// The cell's density pooled over its observed voxels: hits / weighted_path. This is the weighted_path-weighted
+  /// mean of the (neighbourhood-pooled and corrected) voxel densities. It is accurate for uniform stems, but much
+  /// too low where stems are patchy within the cell, as rays penetrate dense patches less, so they carry less
+  /// weight. NaN when no voxel is observed
+  inline double pooledDensity() const
+  {
+    return observed > 0 && weighted_path > 0.0 ? hits / weighted_path : std::numeric_limits<double>::quiet_NaN();
+  }
+  /// density / pooledDensity, which exceeds 1 where the density varies within the cell (about 2 for 0.3 m patches
+  /// in 1 m cells). NaN when either is NaN, or the pooled density is 0
   inline double patchinessRatio() const
   {
-    const double pooled = density();
-    return pooled > 0.0 ? meanVoxelDensity() / pooled : std::numeric_limits<double>::quiet_NaN();
+    const double pooled = pooledDensity();
+    return pooled > 0.0 ? density() / pooled : std::numeric_limits<double>::quiet_NaN();
   }
   /// Mean hits per observed voxel. NaN when no voxel is observed
   inline double meanHitsPerVoxel() const

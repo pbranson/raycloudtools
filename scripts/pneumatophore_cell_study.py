@@ -37,14 +37,14 @@ SCENES = {
     "patches r=0.2m, 30% cover": "--stems_per_m2 300 --patchy 0.2,0.3,0",
 }
 # the cells file's columns: the density pooled over the cell's voxels, and the mean of the voxel densities
-POOLED = "density_"
-MEAN = "mean_voxel_density_"
+POOLED = "pooled_density_"
+MEAN = "density_"
 # name: (estimator, voxel width, column of the cells file)
 METHODS = {
-    "pooled 0.05m voxels": ("pooled", 0.05, POOLED),
-    "pooled 0.05m voxels, mean": ("pooled", 0.05, MEAN),
-    "pooled 0.1m voxels": ("pooled", 0.1, POOLED),
-    "pooled 0.1m voxels, mean": ("pooled", 0.1, MEAN),
+    "pooled 0.05m voxels": ("pooled", 0.05, MEAN),
+    "pooled 0.05m voxels, cell pooled": ("pooled", 0.05, POOLED),
+    "pooled 0.1m voxels": ("pooled", 0.1, MEAN),
+    "pooled 0.1m voxels, cell pooled": ("pooled", 0.1, POOLED),
     "crossing 0.05m voxels, mean": ("crossing", 0.05, MEAN),
     "crossing 0.1m voxels, mean": ("crossing", 0.1, MEAN),
     "beer_lambert 0.05m voxels, mean": ("beer_lambert", 0.05, MEAN),
@@ -79,8 +79,8 @@ def main():
     if args.pooled_widths:
         methods = {}
         for w in args.pooled_widths.split(","):
-            methods[f"pooled {w}m voxels"] = ("pooled", float(w), POOLED)
-            methods[f"pooled {w}m voxels, mean"] = ("pooled", float(w), MEAN)
+            methods[f"pooled {w}m voxels"] = ("pooled", float(w), MEAN)
+            methods[f"pooled {w}m voxels, cell pooled"] = ("pooled", float(w), POOLED)
     scenes = SCENES
     if args.stems_per_m2:
         scenes = {f"random {n}/m2": f"--stems_per_m2 {n}" for n in args.stems_per_m2.split(",")}

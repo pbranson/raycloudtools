@@ -8,7 +8,7 @@
 #include "raycloud.h"
 #include "raylib/raylibconfig.h"
 #include "rayparse.h"
-#if RAYLIB_WITH_TIFF           // build option to support outputting to geotif (.tif) format
+#if RAYLIB_WITH_TIFF   // build option to support outputting to geotif (.tif) format
 #include "geotiffio.h" /* for GeoTIFF */
 #include "xtiffio.h"   /* for TIFF */
 #endif
@@ -478,7 +478,7 @@ bool writeDensityCells(const std::string &file_name, const DensityGrid &grid, co
   const std::vector<DensityCell> cells = aggregateDensityCells(grid, shift, Eigen::Vector3i(0, 0, 0), dims, layout);
   const std::string label = densityLabel(grid);
   ofs << "x_min,y_min,z_min,x_max,y_max,z_max,observed_fraction,hits,weighted_path,density_" << label
-      << ",mean_voxel_density_" << label << ",patchiness_ratio" << std::endl;
+      << ",pooled_density_" << label << ",patchiness_ratio" << std::endl;
   for (int z = 0; z < layout.num_cells[2]; z++)
   {
     for (int y = 0; y < layout.num_cells[1]; y++)
@@ -494,7 +494,7 @@ bool writeDensityCells(const std::string &file_name, const DensityGrid &grid, co
         ofs << cell_min[0] << "," << cell_min[1] << "," << cell_min[2] << "," << cell_max[0] << "," << cell_max[1]
             << "," << cell_max[2] << "," << csvValue(cell.observedFraction()) << ","
             << csvValue(observed ? cell.hits : nan) << "," << csvValue(observed ? cell.weighted_path : nan) << ","
-            << csvValue(cell.density()) << "," << csvValue(cell.meanVoxelDensity()) << ","
+            << csvValue(cell.density()) << "," << csvValue(cell.pooledDensity()) << ","
             << csvValue(cell.patchinessRatio()) << std::endl;
       }
     }
@@ -526,15 +526,15 @@ bool writeDensityProfile(const std::string &file_name, const DensityGrid &grid, 
   layout.num_cells = Eigen::Vector3i(1, 1, dims[2]);
   const std::vector<DensityCell> layers = aggregateDensityCells(grid, shift, Eigen::Vector3i(0, 0, 0), dims, layout);
   const std::string label = densityLabel(grid);
-  ofs << "z_min,z_max,observed_voxels,total_voxels,mean_hits_per_voxel,density_" << label << ",mean_voxel_density_"
-      << label << ",patchiness_ratio" << std::endl;
+  ofs << "z_min,z_max,observed_voxels,total_voxels,mean_hits_per_voxel,density_" << label << ",pooled_density_" << label
+      << ",patchiness_ratio" << std::endl;
   for (int z = 0; z < dims[2]; z++)
   {
     const DensityCell &layer = layers[static_cast<size_t>(z)];
     const double z_min = min_bound[2] + w * static_cast<double>(z);
     ofs << z_min << "," << z_min + w << "," << layer.observed << "," << layer.total << ","
         << csvValue(layer.meanHitsPerVoxel()) << "," << csvValue(layer.density()) << ","
-        << csvValue(layer.meanVoxelDensity()) << "," << csvValue(layer.patchinessRatio()) << std::endl;
+        << csvValue(layer.pooledDensity()) << "," << csvValue(layer.patchinessRatio()) << std::endl;
   }
   std::cout << "density profile written to " << file_name << std::endl;
   return true;

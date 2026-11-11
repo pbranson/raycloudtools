@@ -1173,9 +1173,8 @@ TEST(Basic, RayDensityZarr)
   params.num_tiles = Eigen::Vector2i(2, 2);
   params.tile = Eigen::Vector2i(1, 0);
   params.cell_size = Eigen::Vector3d(0.5, 0.5, 0.1);
-  // three layers below the ground, which no ray reaches. The voxels just below the ground (within one voxel) take
-  // the neighbour prior of the voxels above it (DensityGrid::addNeighbourPriors), so are observed, and the layer just
-  // below the ground is partly observed
+  // three layers below the ground, which no ray reaches, so are unobserved (for stems, the neighbour prior doesn't
+  // fill voxels without rays)
   params.min_height = -0.3;
   params.max_height = 0.3;
   params.options.distribution = ray::ElementDistribution::VerticalCylinder;
@@ -1194,7 +1193,7 @@ TEST(Basic, RayDensityZarr)
   EXPECT_NE(attrs.find("\"origin\": [399999, 6099999]"), std::string::npos) << attrs;
   EXPECT_NE(attrs.find("\"density_model\": \"vertical_cylinder\""), std::string::npos);
   EXPECT_NE(attrs.find("\"estimator\": \"pooled\""), std::string::npos);
-  for (const std::string name : { "density", "mean_voxel_density", "patchiness_ratio", "hits", "weighted_path",
+  for (const std::string name : { "density", "pooled_density", "patchiness_ratio", "hits", "weighted_path",
                                   "observed_fraction", "solid_fraction" })
   {
     const std::string zarray = readTextFile(store + "/" + name + "/.zarray");
@@ -1227,20 +1226,17 @@ TEST(Basic, RayDensityZarr)
   {
     EXPECT_NEAR(zs[static_cast<size_t>(i)], -0.25 + 0.1 * i, 1e-12);
   }
-  // this tile's chunk (z, y, x) = (6, 2, 2). The two lowest layers are unobserved: NaN, with observed fraction 0
+  // this tile's chunk (z, y, x) = (6, 2, 2). The three layers below the ground are unobserved: NaN, with observed
+  // fraction 0
   const std::vector<float> density = readZarrChunk(store + "/density/0.0.1");
-  const std::vector<float> mean = readZarrChunk(store + "/mean_voxel_density/0.0.1");
+  const std::vector<float> mean = readZarrChunk(store + "/pooled_density/0.0.1");
   const std::vector<float> observed = readZarrChunk(store + "/observed_fraction/0.0.1");
   ASSERT_EQ(density.size(), 24u);
   ASSERT_EQ(mean.size(), 24u);
   ASSERT_EQ(observed.size(), 24u);
   for (size_t c = 0; c < density.size(); c++)
   {
-    if (c >= 8 && c < 12)
-    {
-      continue;  // the layer just below the ground
-    }
-    const bool below_ground = c < 8;
+    const bool below_ground = c < 12;
     EXPECT_EQ(std::isnan(density[c]), below_ground) << c;
     EXPECT_EQ(std::isnan(mean[c]), below_ground) << c;
     EXPECT_EQ(observed[c] == 0.0f, below_ground) << c;
@@ -1286,8 +1282,7 @@ std::vector<std::string> splitCsvLine(const std::string &line)
 TEST(Basic, RayDensityTools)
 {
   EXPECT_EQ(command("raycreate pneumatophores 1 --rays 100000 --stems_per_m2 50"), 0);
-  // cells from below the ground (unobserved, so nan, except within a voxel of the ground, from the neighbour prior)
-  // to above the stems, with the crossing estimator
+  // cells from below the ground (unobserved, so nan) to above the stems, with the crossing estimator
   EXPECT_EQ(
     command("rayrender pneumatophores.ply top density --density_model vertical_cylinder --estimator crossing "
             "--stem_diameter 0.01 --no_flat_top --pixel_width 0.05 --min_bound -1,-1,-0.3 --max_bound 1,1,0.6 "
@@ -1298,7 +1293,7 @@ TEST(Basic, RayDensityTools)
     std::string line;
     ASSERT_TRUE(std::getline(ifs, line));
     EXPECT_EQ(line, "x_min,y_min,z_min,x_max,y_max,z_max,observed_fraction,hits,weighted_path,"
-                    "density_frontal_area_per_volume_Nd,mean_voxel_density_frontal_area_per_volume_Nd,"
+                    "density_frontal_area_per_volume_Nd,pooled_density_frontal_area_per_volume_Nd,"
                     "patchiness_ratio");
     int rows = 0, unobserved = 0, observed = 0;
     while (std::getline(ifs, line))
@@ -1307,7 +1302,7 @@ TEST(Basic, RayDensityTools)
       ASSERT_EQ(fields.size(), 12u) << line;
       rows++;
       const double z_min = std::stod(fields[2]);
-      if (z_min < -0.2 + 1e-6)  // well below the ground
+      if (z_min < -0.1 - 1e-6)  // more than one layer below the ground
       {
         unobserved++;
         EXPECT_EQ(std::stod(fields[6]), 0.0) << line;
@@ -1316,7 +1311,13 @@ TEST(Basic, RayDensityTools)
           EXPECT_EQ(fields[i], "nan") << line;
         }
       }
-      else if (z_min > -1e-6 && z_min < 0.15)  // near-ground layers, within the stems
+      else if (z_min < -1e-6)
+      {
+        // the layer touching the ground: rays ending exactly at the ground (on a voxel face) can round into the voxel
+        // below it, so a few of its voxels may be observed, but no more
+        EXPECT_LE(std::stod(fields[6]), 0.02) << line;
+      }
+      else if (z_min < 0.15)  // near-ground layers, within the stems
       {
         observed++;
         EXPECT_GT(std::stod(fields[9]), 0.0) << line;
@@ -1332,23 +1333,27 @@ TEST(Basic, RayDensityTools)
     std::string line;
     ASSERT_TRUE(std::getline(ifs, line));
     EXPECT_EQ(line, "z_min,z_max,observed_voxels,total_voxels,mean_hits_per_voxel,density_frontal_area_per_volume_Nd,"
-                    "mean_voxel_density_frontal_area_per_volume_Nd,patchiness_ratio");
+                    "pooled_density_frontal_area_per_volume_Nd,patchiness_ratio");
     int rows = 0, unobserved = 0;
     while (std::getline(ifs, line))
     {
       const std::vector<std::string> fields = splitCsvLine(line);
       ASSERT_EQ(fields.size(), 8u) << line;
-      if (std::stod(fields[1]) < -0.05 + 1e-6)  // more than a voxel below the ground
+      if (std::stod(fields[1]) < -0.05 + 1e-6)  // more than one voxel below the ground
       {
         EXPECT_EQ(fields[2], "0") << line;
         EXPECT_EQ(fields[5], "nan") << line;
         EXPECT_EQ(fields[6], "nan") << line;
         unobserved++;
       }
+      else if (std::stod(fields[1]) < 1e-6)  // the voxel layer touching the ground: at most a few observed voxels
+      {
+        EXPECT_LE(std::stod(fields[2]), 0.02 * std::stod(fields[3])) << line;
+      }
       rows++;
     }
-    EXPECT_EQ(rows, 18);  // 0.05 m layers over 0.9 m
-    EXPECT_EQ(unobserved, 5);
+    EXPECT_EQ(rows, 18);       // 0.05 m layers over 0.9 m
+    EXPECT_EQ(unobserved, 5);  // 0.25 m below the ground
   }
 
   // density options require a density style, and raydensity requires the tile
@@ -1430,7 +1435,7 @@ TEST(Basic, RayDensityPneumatophores)
     std::string line;
     std::getline(ifs, line);  // header
     EXPECT_EQ(line, "z_min,z_max,observed_voxels,total_voxels,mean_hits_per_voxel,density_frontal_area_per_volume_Nd,"
-                    "mean_voxel_density_frontal_area_per_volume_Nd,patchiness_ratio");
+                    "pooled_density_frontal_area_per_volume_Nd,patchiness_ratio");
     double pooled_sum = 0.0, mean_sum = 0.0;
     for (int i = 0; i < 2; i++)  // the two 0.05 m layers making up the lowest 0.1 m
     {

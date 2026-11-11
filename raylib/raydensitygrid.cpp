@@ -264,7 +264,7 @@ void DensityGrid::addNeighbourPriors()
         const DensityGrid::Voxel corner_vox = voxels_[ind - X - Y - Z];
         voxels_[ind - X - Y - Z] = voxels_[ind];  // move centre up to corner
         DensityGrid::Voxel &voxel = voxels_[ind - X - Y - Z];
-        if (needed < 0.0)
+        if (needed < 0.0 || (!fill_unobserved_priors_ && voxel.numRays() <= 0.0f))
           continue;
         neighbours = voxels_[ind - X];
         neighbours += voxels_[ind + X];
@@ -448,6 +448,8 @@ std::unique_ptr<DensityGrid> estimateDensityGrid(const std::string &cloud_file, 
 #endif
   grid.applyOverlapCorrection();
 #if DENSITY_MIN_RAYS > 0
+  // for stems, voxels no ray reached stay unobserved (NaN in the cells), rather than taking their neighbours' values
+  grid.setFillUnobservedPriors(!cylinders);
   grid.addNeighbourPriors();
 #endif
   return grid_ptr;
