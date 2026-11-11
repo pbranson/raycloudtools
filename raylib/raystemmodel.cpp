@@ -49,6 +49,36 @@ double effectiveStemWidth(double diameter, double beam_diameter, double threshol
   return 2.0 * low;
 }
 
+double meanExitDistance(double width_x, double width_y)
+{
+  if (width_x <= 0.0 || width_y <= 0.0)
+  {
+    return 0.0;
+  }
+  // 4 F / (2 pi a b), where F is the integral over 0 <= u <= a, 0 <= v <= b of (a - u)(b - v) / sqrt(u^2 + v^2),
+  // evaluated in polar coordinates: the radial integral is analytic, the angular one by Simpson's rule
+  const double a = width_x, b = width_y;
+  const double corner = std::atan2(b, a);
+  auto radial = [&](double theta) {
+    const double c = std::cos(theta), s = std::sin(theta);
+    const double r = theta < corner ? a / c : b / s;
+    return a * b * r - 0.5 * (a * s + b * c) * r * r + c * s * r * r * r / 3.0;
+  };
+  // integrate each side of the corner angle separately, as the integrand has a kink there
+  auto simpson = [&](double t0, double t1) {
+    const int n = 512;  // even
+    const double h = (t1 - t0) / n;
+    double sum = radial(t0) + radial(t1);
+    for (int i = 1; i < n; i++)
+    {
+      sum += (i % 2 == 1 ? 4.0 : 2.0) * radial(t0 + h * i);
+    }
+    return sum * h / 3.0;
+  };
+  const double integral = simpson(0.0, corner) + simpson(corner, 0.5 * kPi);
+  return 4.0 * integral / (2.0 * kPi * a * b);
+}
+
 StemWidthModel::StemWidthModel(double diameter, const BeamFootprint &footprint)
   : diameter_(diameter)
   , enabled_(diameter > 0.0 && footprint.enabled())

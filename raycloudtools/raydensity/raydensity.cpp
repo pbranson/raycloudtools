@@ -34,7 +34,7 @@ void usage(int exit_code = 1)
   std::cout << "                     --return_range surface - with --footprint: the range of a partial hit is that of the stem" << std::endl;
   std::cout << "                                             surface (default), or outline: where the beam meets the widened outline" << std::endl;
   std::cout << "                     --pool_radius 0.05, --min_gap 0, --min_sin_zenith 0.1, --max_sin_zenith 1," << std::endl;
-  std::cout << "                     --no_overlap_correction - as for rayrender" << std::endl;
+  std::cout << "                     --no_overlap_correction, --self_shadow_correction - as for rayrender" << std::endl;
   std::cout << "                     --flat_top            - enable the flat canopy top model. Unlike rayrender (where it is on" << std::endl;
   std::cout << "                                             unless --no_flat_top), it is off by default, as it biases stems" << std::endl;
   std::cout << "Defaults differ from rayrender: --density_model vertical_cylinder, --estimator pooled, no flat top model." << std::endl;
@@ -82,14 +82,14 @@ int rayDensity(int argc, char *argv[])
     max_sin_option("max_sin_zenith", 'y', &max_sin), pool_option("pool_radius", 'q', &pool_radius),
     gap_option("min_gap", 'm', &min_gap);
   ray::OptionalFlagArgument voxels_flag("voxels", 'x'), no_overlap("no_overlap_correction", 'k'),
-    flat_top("flat_top", 'f');
+    flat_top("flat_top", 'f'), self_shadow("self_shadow_correction", 'i');
   if (!ray::parseCommandLine(argc, argv, { &cloud_file, &store_file },
                              { &tile_option,     &tiles_option,        &origin_option,  &width_option,
                                &voxel_option,    &cell_option,         &heights_option, &ground_option,
                                &halo_option,     &model_option,        &estimator_option, &stem_option,
                                &footprint_option, &return_range_option, &min_sin_option, &max_sin_option,
                                &pool_option,     &gap_option,          &voxels_flag,    &no_overlap,
-                               &flat_top }))
+                               &flat_top,        &self_shadow }))
   {
     usage();
   }
@@ -132,6 +132,7 @@ int rayDensity(int argc, char *argv[])
   }
   options.flat_top_compensation = flat_top.isSet();
   options.overlap_correction = !no_overlap.isSet();
+  options.self_shadow_correction = self_shadow.isSet();
   options.min_sin_zenith = min_sin.value();
   options.max_sin_zenith = max_sin.value();
   options.pool_radius = pool_radius.value();

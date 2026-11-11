@@ -1147,6 +1147,148 @@ TEST(Basic, RayDensityMinGap)
   EXPECT_LT(estimates[1], estimates[0]);
 }
 
+/// The pneumatophore generator's stem height distributions and measurement errors
+TEST(Basic, RayDensityPneumatophoreOptions)
+{
+  ray::PneumatophoreParams params;
+  params.plot_width = 1.0;
+  params.margin = 1.0;
+  params.num_rays = 20000;
+  params.stems_per_m2 = 300.0;
+  ray::PneumatophoreGen gen;
+  // stems of one height, and uniform heights
+  params.height_sd = 0.0;
+  params.mean_height = 0.6;
+  gen.generate(params, 3);
+  ASSERT_FALSE(gen.stems().empty());
+  for (const auto &stem : gen.stems())
+  {
+    EXPECT_EQ(stem[2], 0.6);
+  }
+  params.height_distribution = ray::PneumatophoreParams::HeightDistribution::Uniform;
+  params.min_height = 0.1;
+  params.max_height = 0.5;
+  gen.generate(params, 3);
+  double sum = 0.0;
+  for (const auto &stem : gen.stems())
+  {
+    EXPECT_GE(stem[2], 0.1);
+    EXPECT_LE(stem[2], 0.5);
+    sum += stem[2];
+  }
+  EXPECT_NEAR(sum / static_cast<double>(gen.stems().size()), 0.3, 0.01);
+
+  // range and pose noise don't change the scene or the ideal rays' directions
+  params.height_distribution = ray::PneumatophoreParams::HeightDistribution::Normal;
+  params.ground_unbounded = false;
+  gen.generate(params, 5);
+  const ray::Cloud ideal = gen.cloud();
+  const std::vector<Eigen::Vector3d> stems = gen.stems();
+  params.range_noise = 0.01;
+  gen.generate(params, 5);
+  EXPECT_EQ(gen.stems(), stems);
+  ASSERT_EQ(gen.cloud().rayCount(), ideal.rayCount());
+  double sum_error2 = 0.0;
+  int num_returns = 0;
+  for (size_t i = 0; i < ideal.rayCount(); i++)
+  {
+    const Eigen::Vector3d ray = ideal.ends[i] - ideal.starts[i];
+    const Eigen::Vector3d noisy = gen.cloud().ends[i] - gen.cloud().starts[i];
+    EXPECT_EQ(gen.cloud().starts[i], ideal.starts[i]);
+    if (ideal.colours[i].alpha > 0)
+    {
+      const double error = noisy.norm() - ray.norm();
+      sum_error2 += error * error;
+      num_returns++;
+    }
+    else
+    {
+      EXPECT_NEAR((noisy - ray).norm(), 0.0, 1e-9);  // no return, so no range noise
+    }
+  }
+  ASSERT_GT(num_returns, 1000);
+  EXPECT_NEAR(std::sqrt(sum_error2 / num_returns), 0.01, 0.001);
+  params.range_noise = 0.0;
+  params.pose_noise = 0.02;
+  params.pose_noise_interval = 0.1;
+  gen.generate(params, 5);
+  double sum_offset2 = 0.0;
+  for (size_t i = 0; i < ideal.rayCount(); i++)
+  {
+    // the whole ray is translated
+    EXPECT_NEAR(((gen.cloud().ends[i] - gen.cloud().starts[i]) - (ideal.ends[i] - ideal.starts[i])).norm(), 0.0, 1e-9);
+    sum_offset2 += (gen.cloud().starts[i] - ideal.starts[i]).squaredNorm();
+  }
+  // per axis standard deviation of the interpolated offsets, which is below the knots' 0.02 (about 0.82 of it)
+  const double offset_sd = std::sqrt(sum_offset2 / (3.0 * static_cast<double>(ideal.rayCount())));
+  EXPECT_GT(offset_sd, 0.01);
+  EXPECT_LT(offset_sd, 0.025);
+}
+
+/// The mean exit distance of a rectangle, and the self-shadow correction of the pooled estimator: it lowers the mean
+/// of the voxel densities by about 1 + s d_eff / W^2 (towards the truth), and leaves the pooled cell density unchanged
+TEST(Basic, RayDensitySelfShadow)
+{
+  EXPECT_NEAR(ray::meanExitDistance(1.0, 1.0), 0.473201, 1e-5);
+  EXPECT_NEAR(ray::meanExitDistance(0.15, 0.15), 0.15 * 0.473201, 1e-6);
+  EXPECT_NEAR(ray::meanExitDistance(0.1, 0.3), ray::meanExitDistance(0.3, 0.1), 1e-9);
+  EXPECT_GT(ray::meanExitDistance(0.1, 0.3), ray::meanExitDistance(0.1, 0.1));
+  EXPECT_LT(ray::meanExitDistance(0.1, 0.3), ray::meanExitDistance(0.3, 0.3));
+
+  ray::PneumatophoreParams scene;
+  scene.plot_width = 2.0;
+  scene.margin = 4.0;
+  scene.num_rays = 225000;
+  scene.stems_per_m2 = 300.0;
+  scene.footprint.exit_diameter = 0.01;
+  scene.footprint.divergence = 0.003;
+  scene.footprint.threshold = 0.05;
+  ray::PneumatophoreGen gen;
+  gen.generate(scene, 11);
+  gen.cloud().save("self_shadow.ply");
+  const double half_plot = 0.5 * scene.plot_width;
+  double frontal_area = 0.0;
+  for (const auto &stem : gen.stems())
+  {
+    if (std::abs(stem[0]) < half_plot && std::abs(stem[1]) < half_plot)
+    {
+      frontal_area += scene.diameter * std::min(stem[2], 0.1);
+    }
+  }
+  const double truth = frontal_area / (scene.plot_width * scene.plot_width * 0.1);
+  const ray::Cuboid bounds(Eigen::Vector3d(-half_plot, -half_plot, 0.0), Eigen::Vector3d(half_plot, half_plot, 0.1));
+  const double voxel_width = 0.05;
+  const Eigen::Vector3i dims(40, 40, 2);
+  ray::CellLayout layout;
+  layout.min_bound = bounds.min_bound_;
+  layout.cell_size = Eigen::Vector3d(scene.plot_width, scene.plot_width, 0.1);
+  ray::DensityCell cells[2];
+  for (int k = 0; k < 2; k++)
+  {
+    ray::DensityOptions options;
+    options.distribution = ray::ElementDistribution::VerticalCylinder;
+    options.path_estimator = ray::PathEstimator::PooledBeerLambert;
+    options.flat_top_compensation = false;
+    options.stem_diameter = scene.diameter;
+    options.footprint = scene.footprint;
+    options.self_shadow_correction = k == 1;
+    int shift = 0;
+    auto grid = ray::estimateDensityGrid("self_shadow.ply", bounds, voxel_width, dims, options, shift);
+    ASSERT_TRUE(grid != nullptr);
+    cells[k] = ray::aggregateDensityCells(*grid, shift, Eigen::Vector3i(0, 0, 0), dims, layout)[0];
+  }
+  std::cout << "true N*d near ground: " << truth << ", mean of the voxel densities: " << cells[0].density()
+            << " (uncorrected), " << cells[1].density()
+            << " (self-shadow corrected), pooled: " << cells[0].pooledDensity() << ", " << cells[1].pooledDensity()
+            << std::endl;
+  EXPECT_NEAR(cells[1].pooledDensity(), cells[0].pooledDensity(), 1e-4 * cells[0].pooledDensity());
+  // effective width about 2.2 cm, so 1 + 0.473 * 0.022 / 0.15 = 1.07 (a little less after the occlusion correction)
+  const double ratio = cells[0].density() / cells[1].density();
+  EXPECT_GT(ratio, 1.05);
+  EXPECT_LT(ratio, 1.08);
+  EXPECT_LT(std::abs(cells[1].density() - truth), std::abs(cells[0].density() - truth));
+}
+
 /// The Zarr store of a tile at georeferenced (e.g. UTM) coordinates: valid metadata, float32 data and float64
 /// coordinates that resolve the cell centres exactly, NaN for unobserved cells (here below the ground), the tile's
 /// description, and a second tile with different parameters is refused
@@ -1419,8 +1561,8 @@ TEST(Basic, RayDensityPneumatophores)
     options.distribution = ray::ElementDistribution::VerticalCylinder;
     options.path_estimator = ray::PathEstimator::PooledBeerLambert;
     options.flat_top_compensation = false;
-    // a uniform (random) stand at 100 stems/m^2, which suits the larger pool (the default 0.05 m is about 7% high
-    // here, from few hits per neighbourhood; see docs/pneumatophore_density_method.md)
+    // a uniform (random) stand at 100 stems/m^2, which suits the larger pool (with the default 0.05 m the mean of the
+    // voxel densities is about 7% high here, from each stem's shadow within its own neighbourhood)
     options.pool_radius = 0.1;
     ray::DensityOutputs outputs;
     outputs.profile_file = "pneumatophores_test_profile.csv";

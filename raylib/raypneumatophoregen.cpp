@@ -148,6 +148,10 @@ void PneumatophoreGen::generateStems(std::mt19937 &gen)
   const double half_field = 0.5 * p.plot_width + p.margin;
   const double field_area = 4.0 * half_field * half_field;
   auto random_height = [&]() {
+    if (p.height_distribution == PneumatophoreParams::HeightDistribution::Uniform)
+    {
+      return p.min_height + (p.max_height - p.min_height) * rng.uniform();
+    }
     double h;
     do
     {
@@ -369,6 +373,19 @@ void PneumatophoreGen::generate(const PneumatophoreParams &params, unsigned int 
   const RGBA stem_colour(40, 160, 40, 255), ground_colour(120, 80, 40, 255), none_colour(128, 128, 128, 0),
     trunk_colour(150, 110, 90, 255);
   int num_stem_hits = 0, num_ground_hits = 0, num_omitted = 0;
+  // measurement errors use their own random sequence, so the scene and the ideal rays don't depend on them
+  std::mt19937 noise_gen(seed ^ 0x5bd1e995u);
+  SceneRandom noise_rng(noise_gen);
+  std::vector<Eigen::Vector3d> pose_knots;
+  const double pose_interval = std::max(1e-3, params_.pose_noise_interval);
+  if (params_.pose_noise > 0.0)
+  {
+    const int num_knots = static_cast<int>(std::ceil(path_length / pose_interval)) + 2;
+    for (int k = 0; k < num_knots; k++)
+    {
+      pose_knots.emplace_back(noise_rng.normal(), noise_rng.normal(), noise_rng.normal());
+    }
+  }
   for (int i = 0; i < params_.num_rays; i++)
   {
     const double s = path_length * (static_cast<double>(i) + 0.5) / static_cast<double>(params_.num_rays);
@@ -412,7 +429,19 @@ void PneumatophoreGen::generate(const PneumatophoreParams &params, unsigned int 
     }
     num_stem_hits += hit_stem ? 1 : 0;
     num_ground_hits += hit_ground ? 1 : 0;
-    cloud_.addRay(start, start + dir * length, 1e-4 * static_cast<double>(i), colour);
+    if (params_.range_noise > 0.0 && (hit_stem || hit_trunk || hit_ground))
+    {
+      length = std::max(0.0, length + params_.range_noise * noise_rng.normal());
+    }
+    Eigen::Vector3d offset(0.0, 0.0, 0.0);
+    if (!pose_knots.empty())
+    {
+      const double x = s / pose_interval;
+      const size_t k = std::min(static_cast<size_t>(x), pose_knots.size() - 2);
+      const double blend = x - static_cast<double>(k);
+      offset = params_.pose_noise * (pose_knots[k] * (1.0 - blend) + pose_knots[k + 1] * blend);
+    }
+    cloud_.addRay(start + offset, start + dir * length + offset, 1e-4 * static_cast<double>(i), colour);
   }
   if (num_omitted > 0)
   {

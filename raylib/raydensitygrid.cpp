@@ -120,6 +120,24 @@ void DensityGrid::applyOverlapCorrection()
   std::cout << "pooling over neighbourhoods of " << 2 * radius + 1 << " x " << 2 * radius + 1 << " voxels (+-"
             << (radius + 0.5) * voxel_width_ << " m) for a pool radius of " << pool_radius_ << " m" << std::endl;
   const bool correct = !overlap_path_.empty() && path_estimator_ != PathEstimator::Crossing;
+  // the self-shadow correction applies to the pooled neighbourhoods, and needs the stem diameter
+  const bool self_shadow = self_shadow_correction_ && pooled && stem_diameter_ > 0.0;
+  if (self_shadow)
+  {
+    uncorrected_scale_.assign(voxels_.size(), 1.0f);
+  }
+  // the mean exit distance of the neighbourhood, per width in voxels (they are narrower at the grid's edges)
+  std::vector<double> exit_distance(static_cast<size_t>((2 * radius + 1) * (2 * radius + 1)), 0.0);
+  for (int i = 0; i < 2 * radius + 1; i++)
+  {
+    for (int j = 0; j < 2 * radius + 1 && self_shadow; j++)
+    {
+      exit_distance[static_cast<size_t>(i + (2 * radius + 1) * j)] =
+        meanExitDistance(voxel_width_ * (i + 1), voxel_width_ * (j + 1));
+    }
+  }
+  double sum_shadow_factor = 0.0;
+  size_t num_shadow = 0;
   StemResponseTable table(min_gap_ratio_, range_to_outline_);
   size_t num_corrected = 0, num_saturated = 0;
   double sum_factor = 0.0, sum_k_path = 0.0, sum_path = 0.0;
@@ -173,19 +191,43 @@ void DensityGrid::applyOverlapCorrection()
         hits = hits > hits_tolerance ? hits : 0.0;
         const double measured = hits / path;  // local measured density
         double factor = 1.0;
+        // the self-shadow factor 1 + s d_eff / W^2 of this neighbourhood (see DensityOptions::self_shadow_correction)
+        double shadow_factor = 1.0;
+        if (self_shadow && measured > 0.0)
+        {
+          const double rho = k_path > 0.0 ? k_path / path : 1.0;
+          const double area = voxel_width_ * voxel_width_ * static_cast<double>((x1 - x0) * (y1 - y0));
+          shadow_factor = 1.0 + exit_distance[static_cast<size_t>((x1 - x0 - 1) + (2 * radius + 1) * (y1 - y0 - 1))] *
+                                  rho * stem_diameter_ / area;
+          sum_shadow_factor += shadow_factor;
+          num_shadow++;
+          factor = 1.0 / shadow_factor;
+        }
         if (correct && k_path > 0.0 && measured > 0.0)
         {
           // measured = a R(pi d a / 4, rho) for true density a = N d
           const double rho = k_path / path;  // the (G rho L)-weighted mean ratio of effective width to diameter
           bool saturated = false;
-          const double a =
-            invertStemResponse(measured, rho, stem_diameter_, min_gap_ratio_, max_solid_fraction_, table, saturated);
+          const double a = invertStemResponse(measured / shadow_factor, rho, stem_diameter_, min_gap_ratio_,
+                                              max_solid_fraction_, table, saturated);
           num_saturated += saturated ? 1 : 0;
+          if (self_shadow)
+          {
+            // the uncorrected density, for the pooled cell density
+            bool unused = false;
+            const double a_uncorrected =
+              invertStemResponse(measured, rho, stem_diameter_, min_gap_ratio_, max_solid_fraction_, table, unused);
+            uncorrected_scale_[static_cast<size_t>(ind)] = static_cast<float>(a > 0.0 ? a_uncorrected / a : 1.0);
+          }
           factor = a / measured;
           num_corrected++;
           sum_factor += factor;
           sum_k_path += overlap_path_[static_cast<size_t>(ind)];
           sum_path += voxels_[ind].pathLength();
+        }
+        else if (self_shadow)
+        {
+          uncorrected_scale_[static_cast<size_t>(ind)] = static_cast<float>(shadow_factor);
         }
         // for the pooled estimator, the voxel takes the neighbourhood's density, keeping its own path length
         voxels_[ind].numHits() =
@@ -194,6 +236,11 @@ void DensityGrid::applyOverlapCorrection()
     }
   }
   pooled_densities_ = pooled;
+  if (num_shadow > 0)
+  {
+    std::cout << "self-shadow correction: mean factor " << sum_shadow_factor / static_cast<double>(num_shadow)
+              << " over " << num_shadow << " neighbourhoods" << std::endl;
+  }
   if (num_corrected > 0 && sum_path > 0.0)
   {
     std::cout << "stem occlusion correction: mean factor " << sum_factor / static_cast<double>(num_corrected)
@@ -263,6 +310,10 @@ void DensityGrid::addNeighbourPriors()
         float needed = DENSITY_MIN_RAYS - voxels_[ind].numRays();
         const DensityGrid::Voxel corner_vox = voxels_[ind - X - Y - Z];
         voxels_[ind - X - Y - Z] = voxels_[ind];  // move centre up to corner
+        if (!uncorrected_scale_.empty())
+        {
+          uncorrected_scale_[static_cast<size_t>(ind - X - Y - Z)] = uncorrected_scale_[static_cast<size_t>(ind)];
+        }
         DensityGrid::Voxel &voxel = voxels_[ind - X - Y - Z];
         if (needed < 0.0 || (!fill_unobserved_priors_ && voxel.numRays() <= 0.0f))
           continue;
@@ -395,6 +446,7 @@ std::unique_ptr<DensityGrid> estimateDensityGrid(const std::string &cloud_file, 
   grid.setPathEstimator(options.path_estimator);
   grid.setPoolRadius(options.pool_radius);
   grid.setMinGapRatio(options.min_gap_ratio);
+  grid.setSelfShadowCorrection(cylinders && options.self_shadow_correction);
   if (cylinders)
   {
     grid.setMaxG(options.max_sin_zenith);
@@ -499,7 +551,9 @@ std::vector<DensityCell> aggregateDensityCells(
         const double density = grid.voxelDensity(voxel) * fraction;
         cell.observed++;
         cell.density_sum += density;
-        cell.hits += voxel.numHits() * fraction;
+        // the pooled density is without the self-shadow correction (it is a path-weighted mean, without the bias)
+        cell.hits += voxel.numHits() * fraction *
+                     grid.uncorrectedHitsScale(static_cast<size_t>(grid.getIndex(Eigen::Vector3i(x, y, z))));
         cell.weighted_path += voxel.pathLength();
         if (observed_voxel)
         {

@@ -45,6 +45,14 @@ void usage(int exit_code = 1)
   std::cout << "             --return_range surface - with --footprint, returns at range to the stem surface (default), or with" << std::endl;
   std::cout << "                                      outline, where the beam axis meets the footprint-widened stem outline" << std::endl;
   std::cout << "             --rays 2000000         - number of rays" << std::endl;
+  std::cout << "             --height 0.25,0.08     - mean and standard deviation of the (normal) stem heights (m). A" << std::endl;
+  std::cout << "                                      standard deviation of 0 gives stems of one height" << std::endl;
+  std::cout << "             --uniform_height 0.1,0.4 - stem heights uniform between these (m), instead of normal" << std::endl;
+  std::cout << "             --scanner_height 1.2   - height of the hand-held scanner (m)" << std::endl;
+  std::cout << "             --plot_width 6         - width of the square plot that the scanner walks (m)" << std::endl;
+  std::cout << "             --range_noise 0.01     - standard deviation of the range noise of returns (m)" << std::endl;
+  std::cout << "             --pose_noise 0.02,1    - standard deviation (m) of a smooth trajectory error, per axis, and" << std::endl;
+  std::cout << "                                      the walk distance (m) between its independent values" << std::endl;
   std::cout << "             --ground_returns       - keep ground returns as bounded rays (default: zero alpha)" << std::endl;
   std::cout << "             --trunks 0.1,0.2       - sparse trunks per m^2 and mean diameter (m), with a trunks.csv file" << std::endl;
   std::cout << "             --min_gap 0.5          - minimum gap between stem surfaces, in stem diameters (default 0)" << std::endl;
@@ -73,6 +81,8 @@ int rayCreate(int argc, char *argv[])
   ray::Vector3dArgument footprint(0.0, 1.0), patchy(0.0, 1000.0), truth_cells(0.0001, 1000.0);
   ray::DoubleArgument walk_spacing(0.01, 1000.0, 1.0), min_gap(0.0, 100.0);
   ray::Vector2dArgument zenith(0.0, 180.0), trunks(0.0, 100.0);
+  ray::Vector2dArgument height(0.0, 100.0), uniform_height(0.0, 100.0), pose_noise(0.0, 100.0);
+  ray::DoubleArgument scanner_height(0.01, 1000.0, 1.2), plot_width(0.1, 10000.0, 6.0), range_noise(0.0, 10.0);
   ray::KeyChoice return_range({ "surface", "outline" });
   ray::OptionalKeyValueArgument stems_option("stems_per_m2", 's', &stems_per_m2);
   ray::OptionalKeyValueArgument diameter_option("diameter", 'd', &diameter);
@@ -86,6 +96,12 @@ int rayCreate(int argc, char *argv[])
   ray::OptionalKeyValueArgument zenith_option("zenith", 'z', &zenith);
   ray::OptionalKeyValueArgument truth_cells_option("truth_cells", 't', &truth_cells);
   ray::OptionalKeyValueArgument return_range_option("return_range", 'e', &return_range);
+  ray::OptionalKeyValueArgument height_option("height", 'h', &height);
+  ray::OptionalKeyValueArgument uniform_height_option("uniform_height", 'u', &uniform_height);
+  ray::OptionalKeyValueArgument scanner_height_option("scanner_height", 'n', &scanner_height);
+  ray::OptionalKeyValueArgument plot_width_option("plot_width", 'l', &plot_width);
+  ray::OptionalKeyValueArgument range_noise_option("range_noise", 'x', &range_noise);
+  ray::OptionalKeyValueArgument pose_noise_option("pose_noise", 'j', &pose_noise);
   ray::OptionalFlagArgument clustered_flag("clustered", 'c'), ground_flag("ground_returns", 'g'),
     overlapping_flag("overlapping", 'o');
   bool from_seed = ray::parseCommandLine(argc, argv, { &cloud_type, &seed }, { &view_flag });
@@ -95,7 +111,8 @@ int rayCreate(int argc, char *argv[])
     argc, argv, { &pneumatophores_type, &seed },
     { &view_flag, &stems_option, &diameter_option, &rays_option, &footprint_option, &clustered_flag, &ground_flag,
       &spread_option, &patchy_option, &walk_option, &zenith_option, &truth_cells_option, &overlapping_flag,
-      &min_gap_option, &trunks_option, &return_range_option });
+      &min_gap_option, &trunks_option, &return_range_option, &height_option, &uniform_height_option,
+      &scanner_height_option, &plot_width_option, &range_noise_option, &pose_noise_option });
   if (!from_seed && !from_file && !pneumatophores)
     usage();
 
@@ -320,6 +337,40 @@ int rayCreate(int argc, char *argv[])
       params.max_zenith_deg = zenith.value()[1];
     }
     params.ground_unbounded = !ground_flag.isSet();
+    if (height_option.isSet() && uniform_height_option.isSet())
+    {
+      std::cerr << "Error: --height and --uniform_height are alternatives" << std::endl;
+      return 1;
+    }
+    if (height_option.isSet())
+    {
+      params.mean_height = height.value()[0];
+      params.height_sd = height.value()[1];
+      if (params.height_sd == 0.0 && params.mean_height < 0.02)
+      {
+        std::cerr << "Error: stems must be at least 0.02 m tall" << std::endl;
+        return 1;
+      }
+    }
+    if (uniform_height_option.isSet())
+    {
+      params.height_distribution = ray::PneumatophoreParams::HeightDistribution::Uniform;
+      params.min_height = uniform_height.value()[0];
+      params.max_height = uniform_height.value()[1];
+      if (params.max_height < params.min_height)
+      {
+        std::cerr << "Error: --uniform_height needs the minimum height first" << std::endl;
+        return 1;
+      }
+    }
+    params.scanner_height = scanner_height.value();
+    params.plot_width = plot_width.value();
+    params.range_noise = range_noise.value();
+    if (pose_noise_option.isSet())
+    {
+      params.pose_noise = pose_noise.value()[0];
+      params.pose_noise_interval = std::max(0.01, pose_noise.value()[1]);
+    }
     if (footprint_option.isSet())
     {
       params.footprint.exit_diameter = footprint.value()[0];
