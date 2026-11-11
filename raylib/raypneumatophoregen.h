@@ -34,6 +34,13 @@ struct RAYLIB_EXPORT PneumatophoreParams
   /// max_solid_fraction / (1 + min_gap_ratio)^2
   double min_gap_ratio = 0.0;
 
+  // sparse tree trunks: tall vertical cylinders at random positions (not overlapping each other), which the
+  // pneumatophores don't overlap. Trunk returns are coloured brown-grey
+  double trunks_per_m2 = 0.0;
+  double trunk_diameter = 0.2;      // mean trunk diameter (m)
+  double trunk_diameter_sd = 0.05;  // standard deviation of trunk diameter (m), truncated at 0.05 m
+  double trunk_height = 10.0;
+
   // spatial arrangement. Random places stems uniformly at random over the ground. Clustered places stems along
   // cable roots radiating from trees, with the same mean density
   bool clustered = false;
@@ -77,6 +84,10 @@ public:
 
   /// The stems, as x, y, height
   inline const std::vector<Eigen::Vector3d> &stems() const { return stems_; }
+  /// The trunks, as x, y, diameter
+  inline const std::vector<Eigen::Vector3d> &trunks() const { return trunks_; }
+  /// The trunks as a .csv file of x, y, diameter
+  bool writeTrunks(const std::string &file_name) const;
   inline const Cloud &cloud() const { return cloud_; }
 
   /// The true frontal area per unit volume N d, averaged over each height layer within the plot, as a .csv file
@@ -91,12 +102,13 @@ public:
 
   /// Cast a single ray, returning its length and whether it hit a stem, or the ground
   void castRay(const Eigen::Vector3d &start, const Eigen::Vector3d &dir, double &length, bool &hit_stem,
-               bool &hit_ground) const;
+               bool &hit_ground, bool &hit_trunk) const;
 
 private:
   void generateStems(std::mt19937 &gen);
   PneumatophoreParams params_;
   std::vector<Eigen::Vector3d> stems_;
+  std::vector<Eigen::Vector3d> trunks_;
   Cloud cloud_;
   // bucket grid of stem indices, for accelerating ray intersection
   std::vector<std::vector<int>> buckets_;

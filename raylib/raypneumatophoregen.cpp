@@ -93,11 +93,39 @@ void PneumatophoreGen::generateStems(std::mt19937 &gen)
     throw std::runtime_error(ss.str());
   }
   StemHash hash(-half_field, 2.0 * half_field, separation);
-  // accepts a stem unless it overlaps an existing one (when hard_core)
+  // sparse trunks, not overlapping each other
+  trunks_.clear();
+  const int num_trunks = static_cast<int>(std::round(p.trunks_per_m2 * field_area));
+  for (int attempt = 0; static_cast<int>(trunks_.size()) < num_trunks && attempt < 1000 * num_trunks; attempt++)
+  {
+    const Eigen::Vector2d pos = random_position();
+    double diameter;
+    do
+    {
+      diameter = p.trunk_diameter + p.trunk_diameter_sd * normal(gen);
+    } while (diameter < 0.05);
+    bool clear = true;
+    for (const auto &t : trunks_)
+    {
+      clear = clear && (pos - t.head<2>()).norm() > 0.5 * (diameter + t[2]) + 0.1;
+    }
+    if (clear)
+    {
+      trunks_.emplace_back(pos[0], pos[1], diameter);
+    }
+  }
+  // accepts a stem unless it overlaps an existing one (when hard_core), or a trunk
   auto try_add = [&](const Eigen::Vector2d &pos) {
     if (p.hard_core && hash.overlaps(pos))
     {
       return false;
+    }
+    for (const auto &t : trunks_)
+    {
+      if ((pos - t.head<2>()).norm() < 0.5 * (t[2] + p.diameter))
+      {
+        return false;
+      }
     }
     hash.add(pos);
     stems_.emplace_back(pos[0], pos[1], random_height());
@@ -282,8 +310,9 @@ void PneumatophoreGen::generate(const PneumatophoreParams &params, unsigned int 
   const int num_lines = std::max(1, static_cast<int>(params_.plot_width / params_.walk_spacing));
   const double path_length = params_.plot_width * num_lines;
   cloud_.clear();
-  const RGBA stem_colour(40, 160, 40, 255), ground_colour(120, 80, 40, 255), none_colour(128, 128, 128, 0);
-  int num_stem_hits = 0, num_ground_hits = 0;
+  const RGBA stem_colour(40, 160, 40, 255), ground_colour(120, 80, 40, 255), none_colour(128, 128, 128, 0),
+    trunk_colour(150, 110, 90, 255);
+  int num_stem_hits = 0, num_ground_hits = 0, num_omitted = 0;
   for (int i = 0; i < params_.num_rays; i++)
   {
     const double s = path_length * (static_cast<double>(i) + 0.5) / static_cast<double>(params_.num_rays);
@@ -296,6 +325,17 @@ void PneumatophoreGen::generate(const PneumatophoreParams &params, unsigned int 
     const double y = -half_plot + params_.walk_spacing * (static_cast<double>(line) + 0.5);
     const Eigen::Vector3d start(-half_plot + along, y,
                                 params_.scanner_height + 0.05 * std::sin(10.0 * s));  // some walking bob
+    // the operator walks around trunks, so omit scanner positions within 0.2 m of a trunk
+    bool near_trunk = false;
+    for (const auto &trunk : trunks_)
+    {
+      near_trunk = near_trunk || (start.head<2>() - trunk.head<2>()).norm() < 0.5 * trunk[2] + 0.2;
+    }
+    if (near_trunk)
+    {
+      num_omitted++;
+      continue;
+    }
 
     // a rotating hand-held scanner covers most directions. Directions are uniform over the band of zenith angles
     const double cos_min = std::cos(params_.min_zenith_deg * kPi / 180.0);
@@ -306,11 +346,11 @@ void PneumatophoreGen::generate(const PneumatophoreParams &params, unsigned int 
     const Eigen::Vector3d dir(horizontal * std::cos(phi), horizontal * std::sin(phi), dz);
 
     double length;
-    bool hit_stem, hit_ground;
-    castRay(start, dir, length, hit_stem, hit_ground);
-    // stems green, ground brown, and rays with no return (at maximum range) grey
-    RGBA colour = hit_stem ? stem_colour : (hit_ground ? ground_colour : none_colour);
-    if (!hit_stem && (!hit_ground || params_.ground_unbounded))
+    bool hit_stem, hit_ground, hit_trunk;
+    castRay(start, dir, length, hit_stem, hit_ground, hit_trunk);
+    // stems green, trunks brown-grey, ground brown, and rays with no return (at maximum range) grey
+    RGBA colour = hit_stem ? stem_colour : (hit_trunk ? trunk_colour : (hit_ground ? ground_colour : none_colour));
+    if (!hit_stem && !hit_trunk && (!hit_ground || params_.ground_unbounded))
     {
       colour.alpha = 0;
     }
@@ -318,19 +358,61 @@ void PneumatophoreGen::generate(const PneumatophoreParams &params, unsigned int 
     num_ground_hits += hit_ground ? 1 : 0;
     cloud_.addRay(start, start + dir * length, 1e-4 * static_cast<double>(i), colour);
   }
-  std::cout << "generated " << stems_.size() << " stems and " << params_.num_rays << " rays, of which " << num_stem_hits
-            << " hit stems and " << num_ground_hits << " hit the ground" << std::endl;
+  if (num_omitted > 0)
+  {
+    std::cout << num_omitted << " rays omitted, from scanner positions within 0.2 m of a trunk" << std::endl;
+  }
+  std::cout << "generated " << stems_.size() << " stems and " << params_.num_rays - num_omitted << " rays, of which "
+            << num_stem_hits << " hit stems and " << num_ground_hits << " hit the ground" << std::endl;
 }
 
 void PneumatophoreGen::castRay(const Eigen::Vector3d &start, const Eigen::Vector3d &dir, double &length, bool &hit_stem,
-                               bool &hit_ground) const
+                               bool &hit_ground, bool &hit_trunk) const
 {
-  hit_stem = hit_ground = false;
+  hit_stem = hit_ground = hit_trunk = false;
   const double inf = std::numeric_limits<double>::max();
   const double t_ground = dir[2] < 0.0 ? start[2] / -dir[2] : inf;
   double t_end = std::min(params_.max_range, t_ground);
   length = t_end;
   hit_ground = t_ground <= params_.max_range;
+
+  // trunks (few, so tested directly), with the same footprint widening as the stems
+  if (!trunks_.empty())
+  {
+    const Eigen::Vector2d s2(start[0], start[1]), d2(dir[0], dir[1]);
+    const double h2 = d2.squaredNorm();
+    const double max_widening = params_.footprint.enabled() ? params_.footprint.diameter(params_.max_range) : 0.0;
+    for (const auto &trunk : trunks_)
+    {
+      const Eigen::Vector2d rel = trunk.head<2>() - s2;
+      const double along = h2 > 1e-12 ? rel.dot(d2) / h2 : 0.0;
+      const double offset2 = std::max(0.0, rel.squaredNorm() - along * along * h2);
+      const double bound = 0.5 * trunk[2] + max_widening;
+      if (offset2 >= bound * bound || h2 <= 1e-12)
+      {
+        continue;
+      }
+      const double width =
+        params_.footprint.enabled() ?
+          effectiveStemWidth(trunk[2], params_.footprint.diameter(std::max(0.0, along)), params_.footprint.threshold) :
+          trunk[2];
+      const double radius = 0.5 * width;
+      if (offset2 >= radius * radius)
+      {
+        continue;
+      }
+      // the trunk must be ahead of the scanner (which is never inside a trunk)
+      const double t_in = along - std::sqrt(radius * radius - offset2) / std::sqrt(h2);
+      const double z_in = start[2] + t_in * dir[2];
+      if (t_in > 0.0 && t_in < t_end && z_in >= 0.0 && z_in <= params_.trunk_height)
+      {
+        t_end = t_in;
+        length = t_in;
+        hit_trunk = true;
+        hit_ground = false;
+      }
+    }
+  }
 
   // the part of the ray below the tallest stem
   double t_lo = 0.0;
@@ -424,6 +506,7 @@ void PneumatophoreGen::castRay(const Eigen::Vector3d &start, const Eigen::Vector
     length = best_t;
     hit_stem = true;
     hit_ground = false;
+    hit_trunk = false;
   }
 }
 
@@ -463,6 +546,22 @@ bool PneumatophoreGen::writeTruthProfile(const std::string &file_name, double la
             << num_stems / area << " stems per m^2) written to " << file_name << std::endl;
   return true;
 }
+bool PneumatophoreGen::writeTrunks(const std::string &file_name) const
+{
+  std::ofstream ofs(file_name.c_str(), std::ios::out);
+  if (!ofs.is_open())
+  {
+    std::cerr << "Error: cannot open " << file_name << " for writing" << std::endl;
+    return false;
+  }
+  ofs << "x,y,diameter" << std::endl;
+  for (const auto &trunk : trunks_)
+  {
+    ofs << trunk[0] << "," << trunk[1] << "," << trunk[2] << std::endl;
+  }
+  return true;
+}
+
 bool PneumatophoreGen::writeStems(const std::string &file_name) const
 {
   std::ofstream ofs(file_name.c_str(), std::ios::out);
@@ -508,7 +607,23 @@ bool PneumatophoreGen::writeTruthCells(const std::string &file_name, const Eigen
     }
   }
   const double volume = cell_size[0] * cell_size[1] * cell_size[2];
-  ofs << "x_min,y_min,z_min,x_max,y_max,z_max,true_frontal_area_per_volume_Nd" << std::endl;
+  // trunks' frontal area, in the cell holding each trunk's centre
+  std::vector<double> trunk_area(static_cast<size_t>(nx * ny * nz), 0.0);
+  for (const auto &trunk : trunks_)
+  {
+    const int x = static_cast<int>(std::floor((trunk[0] + half_plot) / cell_size[0]));
+    const int y = static_cast<int>(std::floor((trunk[1] + half_plot) / cell_size[1]));
+    if (x < 0 || y < 0 || x >= nx || y >= ny)
+    {
+      continue;
+    }
+    for (int z = 0; z < nz; z++)
+    {
+      trunk_area[static_cast<size_t>(x + nx * (y + ny * z))] += trunk[2] * cell_size[2];
+    }
+  }
+  ofs << "x_min,y_min,z_min,x_max,y_max,z_max,true_frontal_area_per_volume_Nd,true_trunk_frontal_area_per_volume"
+      << std::endl;
   for (int z = 0; z < nz; z++)
   {
     for (int y = 0; y < ny; y++)
@@ -518,8 +633,8 @@ bool PneumatophoreGen::writeTruthCells(const std::string &file_name, const Eigen
         const Eigen::Vector3d min_bound(-half_plot + cell_size[0] * x, -half_plot + cell_size[1] * y, cell_size[2] * z);
         const Eigen::Vector3d max_bound = min_bound + cell_size;
         ofs << min_bound[0] << "," << min_bound[1] << "," << min_bound[2] << "," << max_bound[0] << "," << max_bound[1]
-            << "," << max_bound[2] << "," << frontal_area[static_cast<size_t>(x + nx * (y + ny * z))] / volume
-            << std::endl;
+            << "," << max_bound[2] << "," << frontal_area[static_cast<size_t>(x + nx * (y + ny * z))] / volume << ","
+            << trunk_area[static_cast<size_t>(x + nx * (y + ny * z))] / volume << std::endl;
       }
     }
   }

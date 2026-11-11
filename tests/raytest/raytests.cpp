@@ -618,6 +618,32 @@ TEST(Basic, RayDensityStemPlacement)
   EXPECT_GE(std::sqrt(min_separation2), 1.5 * params.diameter);
   params.stems_per_m2 = 3000.0;  // 0.24 solid fraction, but 0.53 for the exclusion discs of 1.5 diameters
   EXPECT_THROW(gen.generate(params, 3), std::runtime_error);
+
+  // trunks: stems don't overlap them, and rays only hit trunks ahead of the scanner (which is above the stems)
+  params.stems_per_m2 = 300.0;
+  params.min_gap_ratio = 0.0;
+  params.trunks_per_m2 = 0.5;
+  params.num_rays = 20000;
+  gen.generate(params, 5);
+  ASSERT_FALSE(gen.trunks().empty());
+  for (const auto &stem : gen.stems())
+  {
+    for (const auto &trunk : gen.trunks())
+    {
+      EXPECT_GE((stem.head<2>() - trunk.head<2>()).norm(), 0.5 * (trunk[2] + params.diameter));
+    }
+  }
+  int trunk_hits = 0;
+  const ray::Cloud &cloud = gen.cloud();
+  for (size_t i = 0; i < cloud.rayCount(); i++)
+  {
+    if (cloud.colours[i].red == 150 && cloud.colours[i].alpha > 0)  // trunk returns
+    {
+      trunk_hits++;
+      EXPECT_GT((cloud.ends[i] - cloud.starts[i]).norm(), 0.15);
+    }
+  }
+  EXPECT_GT(trunk_hits, 0);
 }
 
 /// Reads a chunk of float32 values from a Zarr store
