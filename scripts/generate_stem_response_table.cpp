@@ -12,7 +12,7 @@
 //     -o generate_stem_response_table
 // and run (about 10 minutes with 2 threads):
 //   LD_LIBRARY_PATH=<build>/raylib ./generate_stem_response_table [num_threads=2] > <src>/raylib/raystemresponsetable.h
-#include "raylib/rayrenderer.h"
+#include "raylib/raystemmodel.h"
 
 #include <atomic>
 #include <chrono>

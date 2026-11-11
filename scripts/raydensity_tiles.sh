@@ -66,8 +66,9 @@ elif awk -v h="$halo" -v m="$min_halo" -v w="$voxel" 'BEGIN { exit !(h < m - 1e-
   echo "Error: --halo $halo is less than --pool_radius + 2 --voxel ($min_halo)" >&2
   exit 1
 fi
-# raysplit's halo must cover raydensity's grid, which extends the tile by the halo rounded up to whole voxels plus
-# one voxel (for the neighbour prior), with the tile edges (where split rays end) off the voxel faces
+# raysplit's halo must be at least raydensity's. It is made to cover raydensity's grid, which extends the tile by the
+# halo rounded up to whole voxels plus one voxel (for the neighbour prior), with the tile edges (where split rays end)
+# off the voxel faces, so that the split's clipped ray ends are outside the grid
 split_halo=$(awk -v h="$halo" -v w="$voxel" \
   'BEGIN { n = int(h / w); if (n * w < h - 1e-9 * w) n++; printf "%.10g", (n + 1.5) * w }')
 echo "halo $halo m (split with $split_halo m)"

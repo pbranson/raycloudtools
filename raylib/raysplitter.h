@@ -49,8 +49,8 @@ bool RAYLIB_EXPORT splitGrid(const std::string &file_name, const std::string &cl
 /// through the cloud (per 256 tiles). Otherwise the tiles are bounded by the rays, which takes an extra pass.
 /// Tiles that no ray crosses have no file. Fails if no ray crosses any tile.
 bool RAYLIB_EXPORT splitTiles(const std::string &file_name, const std::string &cloud_name_stub,
-                              const Eigen::Vector2d &origin, double tile_width, double halo, double min_z,
-                              double max_z, const Eigen::Vector2i &num_tiles = Eigen::Vector2i(0, 0));
+                              const Eigen::Vector2d &origin, double tile_width, double halo, double min_z, double max_z,
+                              const Eigen::Vector2i &num_tiles = Eigen::Vector2i(0, 0));
 
 /// Split a ray cloud into one cloud per colour, ignoring differences in alpha. For example, when identified objects in
 /// the cloud are given a unique colour. 

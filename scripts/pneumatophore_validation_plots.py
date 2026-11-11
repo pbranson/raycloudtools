@@ -50,6 +50,11 @@ def read_csv(name):
         return list(csv.DictReader(f))
 
 
+# the column of the cells and profile files to plot: the density pooled over each cell's (or layer's) voxels, or with
+# --mean, the mean of the voxel densities
+COLUMN = "density_"
+
+
 def scene(name, options, seed=11):
     """Generates a scene and its estimates (pooled estimator, 5 cm voxels, 1 x 1 x 0.1 m cells) in a subdirectory"""
     os.makedirs(name, exist_ok=True)
@@ -252,16 +257,16 @@ def fig_models(models_file):
 
 
 def cell_arrays(sc, layer):
-    """Maps of truth, mean-of-voxel estimate and observed fraction for one 0.1 m layer of 1 m cells"""
+    """Maps of truth and estimate (COLUMN) for one 0.1 m layer of 1 m cells"""
     truth = {}
     for r in sc["truth_cells"]:
         if abs(float(r["z_min"]) - 0.1 * layer) < 1e-6:
             truth[(round(float(r["x_min"])), round(float(r["y_min"])))] = float(r["true_frontal_area_per_volume_Nd"])
     est = np.full((6, 6), np.nan)
     tru = np.full((6, 6), np.nan)
-    col = [k for k in sc["cells"][0].keys() if k.startswith("mean_density")][0]
+    col = [k for k in sc["cells"][0].keys() if k.startswith(COLUMN)][0]
     for r in sc["cells"]:
-        if abs(float(r["z_min"]) - 0.1 * layer) < 1e-6:
+        if abs(float(r["z_min"]) - 0.1 * layer) < 1e-6 and r[col] != "nan":
             k = (round(float(r["x_min"])), round(float(r["y_min"])))
             if k in truth:
                 i, j = k[1] + 3, k[0] + 3
@@ -302,7 +307,7 @@ def fig_profiles(scenes):
         z = [0.5 * (float(r["z_min"]) + float(r["z_max"])) for r in tp]
         ax.plot([float(r["true_frontal_area_per_volume_Nd"]) for r in tp], z, color=INK2, lw=1.5, label="truth")
         pr = sc["profile"]
-        col = [k for k in pr[0].keys() if k.startswith("mean_density")][0]
+        col = [k for k in pr[0].keys() if k.startswith(COLUMN)][0]
         zp = [0.5 * (float(r["z_min"]) + float(r["z_max"])) for r in pr]
         ax.plot([float(r[col]) for r in pr], zp, color=BLUE, marker="o", ms=5, label="estimate (5 cm layers)")
         ax.set_ylim(0, 0.6)
@@ -332,10 +337,12 @@ def fig_profiles(scenes):
 
 def fig_methods():
     densities = [30, 100, 300, 600, 1000, 1500]
-    methods = {"pooled, occlusion corrected (recommended)": ("pooled", "", "mean", BLUE),
-               "pooled, no occlusion correction": ("pooled", "--no_overlap_correction", "mean", VIOLET),
-               "crossing (no correction)": ("crossing", "", "mean", ORANGE),
-               "single 1×1×0.1 m beer_lambert voxel": ("beer_lambert", "--no_overlap_correction", "pooled", AQUA)}
+    # the cells' columns: density_ is pooled over the cell's voxels, mean_voxel_density_ the mean of the voxels
+    methods = {"pooled, occlusion corrected (recommended)": ("pooled", "", "density_", BLUE),
+               "pooled, occlusion corrected, mean of voxels": ("pooled", "", "mean_voxel_density_", INK2),
+               "pooled, no occlusion correction": ("pooled", "--no_overlap_correction", "density_", VIOLET),
+               "crossing (no correction), mean of voxels": ("crossing", "", "mean_voxel_density_", ORANGE),
+               "single 1×1×0.1 m beer_lambert voxel": ("beer_lambert", "--no_overlap_correction", "density_", AQUA)}
     results = {m: [] for m in methods}
     os.makedirs("density_sweep", exist_ok=True)
     cwd = os.getcwd()
@@ -351,7 +358,7 @@ def fig_methods():
             cells = read_csv("cells.csv")
             col = [k for k in cells[0].keys() if k.startswith(column)][0]
             pairs = [(float(c[col]), truth[(c["x_min"], c["y_min"])]) for c in cells
-                     if float(c["z_min"]) < 0.05 and (c["x_min"], c["y_min"]) in truth]
+                     if float(c["z_min"]) < 0.05 and (c["x_min"], c["y_min"]) in truth and c[col] != "nan"]
             results[m].append(sum(e for e, _ in pairs) / sum(t for _, t in pairs))
     os.chdir(cwd)
     fig, ax = plt.subplots(figsize=(9, 5.2), constrained_layout=True)
@@ -379,7 +386,11 @@ def fig_methods():
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--models", default="", help="csv of printed effective width and response models")
+    parser.add_argument("--mean", action="store_true",
+                        help="plot the mean of the voxel densities in each cell and layer, rather than the pooled density")
     args = parser.parse_args()
+    global COLUMN
+    COLUMN = "mean_voxel_density_" if args.mean else "density_"
     scenes = {"dense random": scene("dense_random", "--stems_per_m2 300"),
               "patches (r 0.5 m, 30% cover)": scene("patches", "--stems_per_m2 300 --patchy 0.5,0.3,0"),
               "cable roots": scene("cable_roots", "--stems_per_m2 150 --clustered --cluster_spread 0.03")}

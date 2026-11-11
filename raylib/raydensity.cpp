@@ -61,7 +61,19 @@ std::string jsonString(const std::string &text)
     {
       ss << "\\n";
     }
-    else if (static_cast<unsigned char>(c) >= 0x20)
+    else if (c == '\t')
+    {
+      ss << "\\t";
+    }
+    else if (c == '\r')
+    {
+      ss << "\\r";
+    }
+    else if (static_cast<unsigned char>(c) < 0x20)
+    {
+      ss << "\\u00" << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(c) << std::dec;
+    }
+    else
     {
       ss << c;
     }
@@ -239,6 +251,34 @@ const char *estimatorName(PathEstimator estimator)
   return "unknown";
 }
 
+/// Whether @c file_name is a .ply file whose header declares no vertices (a ray cloud without rays)
+bool isEmptyRayCloud(const std::string &file_name)
+{
+  std::ifstream ifs(file_name, std::ios::binary | std::ios::in);
+  std::string line;
+  if (!ifs.is_open() || !std::getline(ifs, line) || line.rfind("ply", 0) != 0)
+  {
+    return false;
+  }
+  bool empty = false;
+  while (std::getline(ifs, line))
+  {
+    std::stringstream ss(line);
+    std::string word, element;
+    long long count = -1;
+    ss >> word;
+    if (word == "end_header")
+    {
+      return empty;
+    }
+    if (word == "element" && ss >> element >> count && element == "vertex")
+    {
+      empty = count == 0;
+    }
+  }
+  return false;
+}
+
 /// Removes the triangles whose horizontal bounds don't overlap the box [box_min, box_max] in x and y, so that
 /// Mesh::toHeightField only bins the triangles near the tile, rather than those of the whole domain
 void cropMesh(Mesh &mesh, const Eigen::Vector2d &box_min, const Eigen::Vector2d &box_max)
@@ -349,16 +389,19 @@ bool estimateDensityTile(const std::string &cloud_file, const DensityTileParams 
     std::string description;
     std::vector<float> data;
   };
+  // the order of the outputs is that of the chunk data below
   std::vector<Output> outputs = {
-    { "density", "mean of the observed voxel densities in the cell", {} },
-    { "single_voxel_density", "total hits / total weighted path length, as if the cell were one voxel", {} },
+    { "density", "total (corrected) hits / total weighted path length over the cell's observed voxels", {} },
+    { "mean_voxel_density", "mean of the observed voxel densities in the cell", {} },
+    { "patchiness_ratio", "mean_voxel_density / density, above 1 where the density varies within the cell", {} },
     { "hits", "sum of (corrected) hits over the observed voxels", {} },
     { "weighted_path", "sum of the G-weighted path lengths (m) over the observed voxels", {} },
     { "observed_fraction", "fraction of the cell's voxels with enough rays for an estimate", {} }
   };
   if (write_solid)
   {
-    outputs.push_back({ "solid_fraction", "N pi d^2 / 4, the fraction of the ground area occupied by stems", {} });
+    outputs.push_back(
+      { "solid_fraction", "N pi d^2 / 4 for N d = density, the fraction of the ground area occupied by stems", {} });
   }
   // coordinates in float64, as float32 can't resolve cells or voxels at georeferenced (e.g. UTM) coordinates
   std::vector<double> xs(static_cast<size_t>(shape_x)), ys(static_cast<size_t>(shape_y)),
@@ -468,101 +511,87 @@ bool estimateDensityTile(const std::string &cloud_file, const DensityTileParams 
 
   const Cuboid bounds(Eigen::Vector3d(grid_min[0], grid_min[1], z0),
                       Eigen::Vector3d(grid_min[0] + nx * w, grid_min[1] + nx * w, z0 + nz * w));
-  int shift = 0;
-  std::unique_ptr<DensityGrid> grid_ptr =
-    estimateDensityGrid(cloud_file, bounds, w, Eigen::Vector3i(nx, nx, nz), params.options, shift);
-  if (!grid_ptr)
-  {
-    return false;
-  }
-  const DensityGrid &grid = *grid_ptr;
-  const Eigen::Vector3i full_dims = grid.dimensions();
 
-  // aggregate the tile's core voxels into cells, by height above ground
-  const size_t num_cells = static_cast<size_t>(cells_x * cells_y * cells_z);
-  std::vector<double> sum(num_cells, 0.0), hits(num_cells, 0.0), path(num_cells, 0.0);
-  std::vector<int> observed(num_cells, 0), total(num_cells, 0);
+  // aggregate the tile's core voxels into cells, by height above ground (of the voxel centres)
+  CellLayout layout;
+  layout.min_bound = Eigen::Vector3d(core_min[0], core_min[1], params.min_height);
+  layout.cell_size = params.cell_size;
+  layout.num_cells = Eigen::Vector3i(cells_x, cells_y, cells_z);
   const size_t num_voxel_out = static_cast<size_t>(tile_voxels * tile_voxels * voxels_z);
-  std::vector<float> voxel_out(params.write_voxels ? num_voxel_out : 0, std::numeric_limits<float>::quiet_NaN());
-  for (int x = halo_voxels; x < halo_voxels + tile_voxels; x++)
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  std::vector<float> voxel_out(params.write_voxels ? num_voxel_out : 0, nan);
+  // every cell has voxels (the grid spans the height range above the lowest and highest ground)
+  std::vector<DensityCell> cells(static_cast<size_t>(cells_x * cells_y * cells_z));
+  for (DensityCell &cell : cells)
   {
-    for (int y = halo_voxels; y < halo_voxels + tile_voxels; y++)
+    cell.total = 1;
+  }
+  // a tile that no ray crosses is valid (e.g. a tile of the domain beyond the scan), and is written as unobserved.
+  // The ray cloud reader fails on a file without rays, so that is detected first
+  const bool no_rays = isEmptyRayCloud(cloud_file);
+  size_t used_rays = 0;
+  if (!no_rays)
+  {
+    int shift = 0;
+    std::unique_ptr<DensityGrid> grid_ptr =
+      estimateDensityGrid(cloud_file, bounds, w, Eigen::Vector3i(nx, nx, nz), params.options, shift);
+    if (!grid_ptr)
     {
-      const double g = ground[static_cast<size_t>(x + nx * y)];
-      const int cx = static_cast<int>(((x - halo_voxels) + 0.5) * w / params.cell_size[0]);
-      const int cy = static_cast<int>(((y - halo_voxels) + 0.5) * w / params.cell_size[1]);
-      for (int z = 0; z < nz; z++)
-      {
-        const double height = z0 + (z + 0.5) * w - g - params.min_height;  // of the voxel centre, from min_height
-        if (height < 0.0 || height >= params.max_height - params.min_height)
-        {
-          continue;
-        }
-        const int cz = std::min(cells_z - 1, static_cast<int>(height / params.cell_size[2]));
-        const size_t c =
-          static_cast<size_t>(std::min(cx, cells_x - 1) + cells_x * (std::min(cy, cells_y - 1) + cells_y * cz));
-        total[c]++;
-        const DensityGrid::Voxel &voxel = grid.voxels()[static_cast<size_t>(grid.getIndex(Eigen::Vector3i(x, y, z)))];
-        if (voxel.numRays() <= DensityGrid::min_voxel_hits)
-        {
-          continue;
-        }
-        const double density = voxelAverageDensity(grid, voxel, x, y, z, full_dims, shift);
-        observed[c]++;
-        sum[c] += density;
-        hits[c] += voxel.numHits();
-        path[c] += voxel.pathLength();
-        if (params.write_voxels)
-        {
-          const int vz = std::min(voxels_z - 1, static_cast<int>(height / w));
-          voxel_out[static_cast<size_t>((x - halo_voxels) + tile_voxels * ((y - halo_voxels) + tile_voxels * vz))] =
-            static_cast<float>(density);
-        }
-      }
+      return false;
     }
+    const DensityGrid &grid = *grid_ptr;
+    used_rays = grid.numUsedRays();
+    auto ground_height = [&](int x, int y) { return ground[static_cast<size_t>(x + nx * y)]; };
+    auto write_voxel = [&](const Eigen::Vector3i &voxel, const Eigen::Vector3d &centre, double density) {
+      const int vz = std::min(voxels_z - 1, static_cast<int>(std::floor(centre[2] / w)));
+      voxel_out[static_cast<size_t>((voxel[0] - halo_voxels) +
+                                    tile_voxels * ((voxel[1] - halo_voxels) + tile_voxels * vz))] =
+        static_cast<float>(density);
+    };
+    cells = aggregateDensityCells(
+      grid, shift, Eigen::Vector3i(halo_voxels, halo_voxels, 0),
+      Eigen::Vector3i(halo_voxels + tile_voxels, halo_voxels + tile_voxels, nz), layout, ground_height,
+      params.write_voxels ? std::function<void(const Eigen::Vector3i &, const Eigen::Vector3d &, double)>(write_voxel) :
+                            nullptr);
+  }
+  size_t num_observed = 0;
+  for (const DensityCell &cell : cells)
+  {
+    num_observed += cell.observed > 0 ? 1 : 0;
+  }
+  if (num_observed == 0)
+  {
+    std::cout << "Warning: "
+              << (no_rays ? "the input has no rays" :
+                            (used_rays == 0 ? "no (usable) rays of the input cross the tile and its halo" :
+                                              "no voxel of the tile has enough rays"))
+              << ", so tile " << params.tile.transpose() << " is written as unobserved (NaN, observed_fraction 0)"
+              << std::endl;
   }
 
-  // chunk data in (z, y, x) C order
-  const float nan = std::numeric_limits<float>::quiet_NaN();
-  std::vector<float> &density = outputs[0].data, &single = outputs[1].data, &hits_out = outputs[2].data,
-                     &path_out = outputs[3].data, &observed_fraction = outputs[4].data;
-  density.assign(num_cells, nan);
-  single.assign(num_cells, nan);
-  hits_out.assign(num_cells, 0.0f);
-  path_out.assign(num_cells, 0.0f);
-  observed_fraction.assign(num_cells, 0.0f);
-  std::vector<float> solid(num_cells, nan);
-  for (int z = 0; z < cells_z; z++)
+  // chunk data in (z, y, x) C order, which is the order of the cells. Unobserved cells are NaN, except for their
+  // observed fraction, which is 0
+  for (auto &output : outputs)
   {
-    for (int y = 0; y < cells_y; y++)
-    {
-      for (int x = 0; x < cells_x; x++)
-      {
-        const size_t c = static_cast<size_t>(x + cells_x * (y + cells_y * z));  // also the C order index for (z,y,x)
-        hits_out[c] = static_cast<float>(hits[c]);
-        path_out[c] = static_cast<float>(path[c]);
-        if (total[c] > 0)
-        {
-          observed_fraction[c] = static_cast<float>(observed[c]) / static_cast<float>(total[c]);
-        }
-        if (observed[c] > 0)
-        {
-          density[c] = static_cast<float>(sum[c] / observed[c]);
-          if (write_solid)
-          {
-            solid[c] = static_cast<float>(0.25 * kPi * d * density[c]);
-          }
-        }
-        if (path[c] > 0.0)
-        {
-          single[c] = static_cast<float>(hits[c] / path[c]);
-        }
-      }
-    }
+    output.data.assign(cells.size(), nan);
   }
-  if (write_solid)
+  for (size_t c = 0; c < cells.size(); c++)
   {
-    outputs[5].data.swap(solid);
+    const DensityCell &cell = cells[c];
+    outputs[5].data[c] = static_cast<float>(cell.observedFraction());
+    if (cell.observed == 0)
+    {
+      continue;
+    }
+    outputs[0].data[c] = static_cast<float>(cell.density());
+    outputs[1].data[c] = static_cast<float>(cell.meanVoxelDensity());
+    outputs[2].data[c] = static_cast<float>(cell.patchinessRatio());
+    outputs[3].data[c] = static_cast<float>(cell.hits);
+    outputs[4].data[c] = static_cast<float>(cell.weighted_path);
+    if (write_solid)
+    {
+      outputs[6].data[c] = static_cast<float>(0.25 * kPi * d * cell.density());
+    }
   }
 
   // this tile's chunks, then its description

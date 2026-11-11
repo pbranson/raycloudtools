@@ -27,6 +27,8 @@ set(PUBLIC_HEADERS
   rayconvexhull.h
   raycuboid.h
   raydecimation.h
+  raydensity.h
+  raydensitygrid.h
   raydiffer.h
   rayellipsoid.h
   rayfinealignment.h
@@ -38,15 +40,15 @@ set(PUBLIC_HEADERS
   raymesh.h
   rayparse.h
   rayply.h
+  raypneumatophoregen.h
   raypose.h
   rayprogress.h
   rayprogressthread.h
   rayrandom.h
   rayrenderer.h
-  raydensity.h
-  raypneumatophoregen.h
   rayroomgen.h
   raysplitter.h
+  raystemmodel.h
   rayterraingen.h
   raythreads.h
   raytrajectory.h
@@ -59,6 +61,7 @@ set(PUBLIC_HEADERS
 set(PRIVATE_HEADERS
   imageread.h
   imagewrite.h
+  raystemresponsetable.h
 )
 
 set(SOURCES
@@ -83,6 +86,8 @@ set(SOURCES
   rayconvexhull.cpp
   raycuboid.cpp
   raydecimation.cpp
+  raydensity.cpp
+  raydensitygrid.cpp
   raydiffer.cpp
   rayellipsoid.cpp
   rayfinealignment.cpp
@@ -93,13 +98,13 @@ set(SOURCES
   raymesh.cpp
   rayparse.cpp
   rayply.cpp
+  raypneumatophoregen.cpp
   rayprogressthread.cpp
   rayrandom.cpp
   rayrenderer.cpp
-  raydensity.cpp
-  raypneumatophoregen.cpp
   rayroomgen.cpp
   raysplitter.cpp
+  raystemmodel.cpp
   rayterraingen.cpp
   raythreads.cpp
   raytrajectory.cpp

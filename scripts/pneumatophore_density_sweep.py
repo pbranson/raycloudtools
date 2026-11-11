@@ -50,11 +50,13 @@ def main():
         for width in [float(w) for w in args.widths.split(",")]:
             run(f"rayrender pneumatophores.ply top density --pixel_width {width} {render}")
             profile = read("profile.csv")
-            keys = list(profile[0].keys())
-            mean_fai = sum(float(r[keys[5]]) * width for r in profile)
-            pooled_fai = sum(float(r[keys[6]]) * width for r in profile)
-            low = [r for r in profile if float(r["z_min"]) < 0.1999]
-            hits = sum(float(r[keys[4]]) for r in low) / len(low)
+            pooled = [k for k in profile[0] if k.startswith("density_")][0]
+            mean = [k for k in profile[0] if k.startswith("mean_voxel_density_")][0]
+            # unobserved layers are nan, and contribute nothing
+            mean_fai = sum(float(r[mean]) * width for r in profile if r[mean] != "nan")
+            pooled_fai = sum(float(r[pooled]) * width for r in profile if r[pooled] != "nan")
+            low = [r for r in profile if float(r["z_min"]) < 0.1999 and r["mean_hits_per_voxel"] != "nan"]
+            hits = sum(float(r["mean_hits_per_voxel"]) for r in low) / len(low)
             print(f"{name}, {width}, {hits:.1f}, {mean_fai / true_fai:.3f}, {pooled_fai / true_fai:.3f}", flush=True)
 
 

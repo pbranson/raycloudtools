@@ -6,7 +6,7 @@
 
 #include "raylib/raylibconfig.h"
 
-#include "rayrenderer.h"
+#include "raydensitygrid.h"
 #include "rayutils.h"
 
 #include <string>
@@ -65,9 +65,9 @@ struct RAYLIB_EXPORT DensityTileParams
   Eigen::Vector2i num_tiles = Eigen::Vector2i(1, 1);
   /// Rays within this distance outside the tile are included, so that the tile's voxels are estimated exactly as
   /// in a single run over the whole domain. It must be at least pool_radius plus two voxel widths (the pooled
-  /// neighbourhood and the neighbour prior). Negative chooses this minimum. The voxel grid covers the halo rounded up
-  /// to whole voxels, plus one voxel, so the input (e.g. from splitTiles) needs a halo at least 1.5 voxels larger,
-  /// for the ray ends that it clips to lie outside the grid
+  /// neighbourhood and the neighbour prior). Negative chooses this minimum. The input (e.g. from splitTiles) needs at
+  /// least this halo. The voxel grid covers the halo rounded up to whole voxels, plus one voxel, so a halo 1.5 voxels
+  /// larger (as scripts/raydensity_tiles.sh uses) keeps the ray ends that the split clips outside the grid
   double halo = -1.0;
   double voxel_width = 0.05;
   /// The output cells. The tile width must be a multiple of the cell width in x and y, and of the voxel width
@@ -91,14 +91,17 @@ struct RAYLIB_EXPORT DensityTileParams
 /// crossing the tile and its halo), and writes the tile's chunk of each array in the Zarr store at @c store_path.
 /// The store's metadata, identical for every tile, is written first. If the store already has metadata that differs
 /// (it was written with different parameters), the tile fails without writing. Output arrays on dimensions (z, y, x)
-/// of cells, with float64 coordinates x, y (cell centres) and z (cell centre height):
-///   density: the mean of the observed voxel densities in the cell (N d for vertical_cylinder, in m^-1)
-///   single_voxel_density: total hits over total weighted path in the cell, as if one voxel the size of the cell
+/// of cells, with float64 coordinates x, y (cell centres) and z (cell centre height), from aggregateDensityCells:
+///   density: pooled over the cell's observed voxels, total (corrected) hits over total weighted path (N d for
+///     vertical_cylinder, in m^-1)
+///   mean_voxel_density: the mean of the observed voxel densities in the cell
+///   patchiness_ratio: mean_voxel_density / density, above 1 where the density varies within the cell
 ///   hits, weighted_path: the sums over the cell's observed voxels
 ///   observed_fraction: the fraction of the cell's voxels with enough rays for an estimate
-///   solid_fraction: N pi d^2 / 4, when a stem diameter is given
-/// and optionally voxel_density on dimensions (zv, yv, xv). Unobserved cells and voxels are NaN. Returns false (with a
-/// message) on invalid parameters, a missing input, or a failed write.
+///   solid_fraction: N pi d^2 / 4 for N d = density, when a stem diameter is given
+/// and optionally voxel_density on dimensions (zv, yv, xv). Unobserved cells and voxels are NaN, except for the
+/// observed fraction (0). A tile that no ray crosses is valid: it is written as unobserved, with a warning. Returns
+/// false (with a message) on invalid parameters, a missing or unreadable input, or a failed write.
 bool RAYLIB_EXPORT estimateDensityTile(const std::string &cloud_file, const DensityTileParams &params,
                                        const std::string &store_path);
 }  // namespace ray
