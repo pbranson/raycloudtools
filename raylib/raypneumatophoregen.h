@@ -31,7 +31,7 @@ struct RAYLIB_EXPORT PneumatophoreParams
   bool hard_core = true;
   /// When hard_core: the minimum gap between neighbouring stems' surfaces, as a ratio of the stem diameter, so stem
   /// centres are at least d (1 + min_gap_ratio) apart. This limits the solid fraction to
-  /// max_solid_fraction / (1 + min_gap_ratio)^2
+  /// PneumatophoreGen::max_solid_fraction / (1 + min_gap_ratio)^2
   double min_gap_ratio = 0.0;
 
   // sparse tree trunks: tall vertical cylinders at random positions (not overlapping each other), which the
@@ -70,15 +70,16 @@ struct RAYLIB_EXPORT PneumatophoreParams
   double max_zenith_deg = 101.5;
 };
 
-/// The highest solid fraction N pi d^2 / 4 at which non-overlapping stems are generated, just below the random
-/// sequential addition (jamming) limit of 0.547 for discs
-static constexpr double max_solid_fraction = 0.5;
-
 /// Generates a synthetic pneumatophore field and its ray cloud. Stem returns are coloured green, ground returns
-/// brown and rays with no return grey
+/// brown and rays with no return grey. The scene depends only on the parameters and seed, not on the platform
+/// or standard library
 class RAYLIB_EXPORT PneumatophoreGen
 {
 public:
+  /// The highest solid fraction N pi d^2 / 4 at which non-overlapping stems are generated, just below the random
+  /// sequential addition (jamming) limit of 0.547 for discs
+  static constexpr double max_solid_fraction = 0.5;
+
   /// Generate the stems and the ray cloud
   void generate(const PneumatophoreParams &params, unsigned int seed);
 

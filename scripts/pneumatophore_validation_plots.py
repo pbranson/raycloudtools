@@ -20,6 +20,8 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm  # noqa: E402
 
+from rayply_numpy import read_rays  # noqa: E402  (from this script's directory)
+
 # palette (validated reference palette): categorical slots, sequential blue ramp, blue-red diverging
 BLUE, ORANGE, AQUA, VIOLET = "#2a78d6", "#eb6834", "#1baf7a", "#6250d6"
 INK, INK2, MUTED, GRID, AXIS, SURFACE = "#0b0b0b", "#52514e", "#898781", "#e1e0d9", "#c3c2b7", "#fcfcfb"
@@ -39,20 +41,6 @@ DIAMETER = 0.01
 HALF = 3.0  # half the plot width (m)
 
 
-PLY_TYPES = {"float": "<f4", "float32": "<f4", "double": "<f8", "float64": "<f8", "uchar": "u1", "uint8": "u1",
-             "int": "<i4", "uint": "<u4", "short": "<i2", "ushort": "<u2", "char": "i1"}
-
-
-def ply_dtype(header):
-    """the vertex record type from a binary little-endian .ply header (float or double ray clouds)"""
-    fields = []
-    for line in header.decode("ascii", "replace").splitlines():
-        parts = line.split()
-        if len(parts) == 3 and parts[0] == "property":
-            fields.append((parts[2], PLY_TYPES[parts[1]]))
-    return np.dtype(fields)
-
-
 def run(cmd):
     subprocess.run(cmd, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -61,19 +49,6 @@ def read_csv(name):
     with open(name) as f:
         return list(csv.DictReader(f))
 
-
-def read_rays(name):
-    """Reads a ray cloud .ply (float or double precision), returning starts, ends, times and colours"""
-    with open(name, "rb") as f:
-        header = b""
-        while not header.endswith(b"end_header\n"):
-            header += f.readline()
-        data = np.fromfile(f, dtype=ply_dtype(header))
-    ray = ("nx", "ny", "nz") if "nx" in data.dtype.names else ("rayx", "rayy", "rayz")
-    ends = np.stack([data["x"], data["y"], data["z"]], axis=1).astype(np.float64)
-    starts = ends + np.stack([data[r] for r in ray], axis=1)  # the ray vector is start - end
-    colours = np.stack([data["red"], data["green"], data["blue"], data["alpha"]], axis=1)
-    return starts, ends, data["time"], colours
 
 def scene(name, options, seed=11):
     """Generates a scene and its estimates (pooled estimator, 5 cm voxels, 1 x 1 x 0.1 m cells) in a subdirectory"""

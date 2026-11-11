@@ -3,39 +3,118 @@
 // ABN 41 687 119 230
 #include "raypneumatophoregen.h"
 
+#include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <functional>
 #include <iostream>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
+#include <utility>
 
 namespace ray
 {
 namespace
 {
-/// Spatial hash of stem positions, to reject candidate stems that would overlap existing ones (a hard-core process)
-class StemHash
+/// Random numbers drawn from std::mt19937, whose output sequence is specified by the C++ standard. The std::
+/// distributions are implementation-defined, so would give different scenes with different standard libraries
+class SceneRandom
 {
 public:
-  StemHash(double field_min, double field_width, double diameter)
-    : min_(field_min)
-    , cell_(std::max(diameter, 1e-4))
-    , diameter2_(diameter * diameter)
+  explicit SceneRandom(std::mt19937 &gen)
+    : gen_(gen)
+  {}
+  /// uniform in the open interval (0, 1)
+  double uniform() { return (static_cast<double>(gen_()) + 0.5) / 4294967296.0; }
+  /// standard normal, by the Box-Muller transform. Values are generated in pairs
+  double normal()
   {
-    cells_ = std::max(1, static_cast<int>(std::ceil(field_width / cell_)));
-    buckets_.resize(static_cast<size_t>(cells_) * static_cast<size_t>(cells_));
+    if (has_spare_)
+    {
+      has_spare_ = false;
+      return spare_;
+    }
+    const double radius = std::sqrt(-2.0 * std::log(uniform()));
+    const double angle = 2.0 * kPi * uniform();
+    spare_ = radius * std::sin(angle);
+    has_spare_ = true;
+    return radius * std::cos(angle);
   }
-  bool overlaps(const Eigen::Vector2d &pos) const
+  /// Poisson distributed count of the given mean, by inversion. Larger means are split into parts of mean at most 64,
+  /// so that exp(-mean) can't underflow. The sum of independent Poisson counts is Poisson, with the total mean
+  int poisson(double mean)
+  {
+    int count = 0;
+    while (mean > 0.0)
+    {
+      const double part = std::min(mean, 64.0);
+      mean -= part;
+      const double u = uniform();
+      double probability = std::exp(-part);
+      double cumulative = probability;
+      int k = 0;
+      // probability > 0 ends the search if rounding leaves the total probability just below u
+      while (u > cumulative && probability > 0.0)
+      {
+        k++;
+        probability *= part / static_cast<double>(k);
+        cumulative += probability;
+      }
+      count += k;
+    }
+    return count;
+  }
+
+private:
+  std::mt19937 &gen_;
+  double spare_ = 0.0;
+  bool has_spare_ = false;
+};
+
+/// A uniform 2D grid of buckets of items (such as positions or indices) over the square [min, min + width)^2, for
+/// finding the items near a position. Positions beyond the grid fall in its edge buckets
+template <class T>
+class BucketGrid2D
+{
+public:
+  BucketGrid2D(double min, double width, double bucket_width)
+    : min_(min)
+    , bucket_width_(bucket_width)
+    , num_(std::max(1, static_cast<int>(std::ceil(width / bucket_width))))
+    , buckets_(static_cast<size_t>(num_) * static_cast<size_t>(num_))
+  {}
+  /// the bucket index of a coordinate, along either axis
+  int index(double x) const
+  {
+    return std::min(num_ - 1, std::max(0, static_cast<int>(std::floor((x - min_) / bucket_width_))));
+  }
+  /// add the item to the bucket containing pos
+  void add(const Eigen::Vector2d &pos, const T &item) { bucket(index(pos[0]), index(pos[1])).push_back(item); }
+  /// add the item to every bucket that overlaps the square of half-width @c radius centred on pos
+  void addWithin(const Eigen::Vector2d &pos, double radius, const T &item)
+  {
+    for (int x = index(pos[0] - radius); x <= index(pos[0] + radius); x++)
+    {
+      for (int y = index(pos[1] - radius); y <= index(pos[1] + radius); y++)
+      {
+        bucket(x, y).push_back(item);
+      }
+    }
+  }
+  /// whether @c predicate is true for any item in the 3 x 3 buckets around pos, which include every item added
+  /// within one bucket width of pos
+  template <class Predicate>
+  bool anyNear(const Eigen::Vector2d &pos, const Predicate &predicate) const
   {
     const int bx = index(pos[0]), by = index(pos[1]);
-    for (int x = std::max(0, bx - 1); x <= std::min(cells_ - 1, bx + 1); x++)
+    for (int x = std::max(0, bx - 1); x <= std::min(num_ - 1, bx + 1); x++)
     {
-      for (int y = std::max(0, by - 1); y <= std::min(cells_ - 1, by + 1); y++)
+      for (int y = std::max(0, by - 1); y <= std::min(num_ - 1, by + 1); y++)
       {
-        for (const auto &c : buckets_[static_cast<size_t>(x) + static_cast<size_t>(cells_) * static_cast<size_t>(y)])
+        for (const auto &item : bucket(x, y))
         {
-          if ((pos - c).squaredNorm() < diameter2_)
+          if (predicate(item))
           {
             return true;
           }
@@ -44,38 +123,41 @@ public:
     }
     return false;
   }
-  void add(const Eigen::Vector2d &pos)
-  {
-    buckets_[static_cast<size_t>(index(pos[0])) + static_cast<size_t>(cells_) * static_cast<size_t>(index(pos[1]))]
-      .push_back(pos);
-  }
+  /// the number of buckets along each axis
+  inline int size() const { return num_; }
+  /// the buckets, indexed by x + size() * y
+  inline std::vector<std::vector<T>> &buckets() { return buckets_; }
 
 private:
-  int index(double x) const { return std::min(cells_ - 1, std::max(0, static_cast<int>((x - min_) / cell_))); }
-  double min_, cell_, diameter2_;
-  int cells_;
-  std::vector<std::vector<Eigen::Vector2d>> buckets_;
+  inline size_t id(int x, int y) const
+  {
+    return static_cast<size_t>(x) + static_cast<size_t>(num_) * static_cast<size_t>(y);
+  }
+  inline std::vector<T> &bucket(int x, int y) { return buckets_[id(x, y)]; }
+  inline const std::vector<T> &bucket(int x, int y) const { return buckets_[id(x, y)]; }
+  double min_, bucket_width_;
+  int num_;
+  std::vector<std::vector<T>> buckets_;
 };
 }  // namespace
 
 void PneumatophoreGen::generateStems(std::mt19937 &gen)
 {
   const PneumatophoreParams &p = params_;
-  std::uniform_real_distribution<double> uniform(0.0, 1.0);
-  std::normal_distribution<double> normal(0.0, 1.0);
+  SceneRandom rng(gen);
   const double half_field = 0.5 * p.plot_width + p.margin;
   const double field_area = 4.0 * half_field * half_field;
   auto random_height = [&]() {
     double h;
     do
     {
-      h = p.mean_height + p.height_sd * normal(gen);
+      h = p.mean_height + p.height_sd * rng.normal();
     } while (h < 0.02);
     return h;
   };
   auto random_position = [&]() {
-    return Eigen::Vector2d(-half_field + 2.0 * half_field * uniform(gen),
-                           -half_field + 2.0 * half_field * uniform(gen));
+    return Eigen::Vector2d(-half_field + 2.0 * half_field * rng.uniform(),
+                           -half_field + 2.0 * half_field * rng.uniform());
   };
   // stems as a fraction of ground area, at the (local) density stems_per_m2
   const double solid_fraction = p.stems_per_m2 * kPi * p.diameter * p.diameter / 4.0;
@@ -92,7 +174,8 @@ void PneumatophoreGen::generateStems(std::mt19937 &gen)
        << max_solid_fraction * 4.0 / (kPi * separation * separation) << " stems per m^2";
     throw std::runtime_error(ss.str());
   }
-  StemHash hash(-half_field, 2.0 * half_field, separation);
+  // the placed stems' positions, to reject candidate stems that would overlap them (a hard-core process)
+  BucketGrid2D<Eigen::Vector2d> placed_stems(-half_field, 2.0 * half_field, std::max(separation, 1e-4));
   // sparse trunks, not overlapping each other
   trunks_.clear();
   const int num_trunks = static_cast<int>(std::round(p.trunks_per_m2 * field_area));
@@ -102,7 +185,7 @@ void PneumatophoreGen::generateStems(std::mt19937 &gen)
     double diameter;
     do
     {
-      diameter = p.trunk_diameter + p.trunk_diameter_sd * normal(gen);
+      diameter = p.trunk_diameter + p.trunk_diameter_sd * rng.normal();
     } while (diameter < 0.05);
     bool clear = true;
     for (const auto &t : trunks_)
@@ -116,7 +199,9 @@ void PneumatophoreGen::generateStems(std::mt19937 &gen)
   }
   // accepts a stem unless it overlaps an existing one (when hard_core), or a trunk
   auto try_add = [&](const Eigen::Vector2d &pos) {
-    if (p.hard_core && hash.overlaps(pos))
+    if (p.hard_core && placed_stems.anyNear(pos, [&](const Eigen::Vector2d &stem) {
+          return (pos - stem).squaredNorm() < separation * separation;
+        }))
     {
       return false;
     }
@@ -127,7 +212,7 @@ void PneumatophoreGen::generateStems(std::mt19937 &gen)
         return false;
       }
     }
-    hash.add(pos);
+    placed_stems.add(pos, pos);
     stems_.emplace_back(pos[0], pos[1], random_height());
     return true;
   };
@@ -137,8 +222,7 @@ void PneumatophoreGen::generateStems(std::mt19937 &gen)
     {
       return static_cast<int>(std::round(expected));
     }
-    std::poisson_distribution<int> count(expected);
-    return count(gen);
+    return rng.poisson(expected);
   };
   // random sequential addition of a given number of stems, to positions sampled by the given acceptance function
   auto place = [&](int target, const std::function<bool(const Eigen::Vector2d &)> &accept) {
@@ -166,37 +250,19 @@ void PneumatophoreGen::generateStems(std::mt19937 &gen)
     const double half_patch_field = half_field + p.patch_radius;
     const double cover = std::min(p.patch_cover, 0.999);
     const double centre_density = -std::log(1.0 - cover) / (kPi * p.patch_radius * p.patch_radius);
-    std::poisson_distribution<int> patch_count(centre_density * 4.0 * half_patch_field * half_patch_field);
-    const int num_patches = patch_count(gen);
+    const int num_patches = rng.poisson(centre_density * 4.0 * half_patch_field * half_patch_field);
     // bucket the patch centres for a fast inside test
-    const double cell = std::max(p.patch_radius, 0.05);
-    const int cells = static_cast<int>(std::ceil(2.0 * half_patch_field / cell));
-    std::vector<std::vector<Eigen::Vector2d>> patch_buckets(static_cast<size_t>(cells * cells));
+    BucketGrid2D<Eigen::Vector2d> patches(-half_patch_field, 2.0 * half_patch_field, std::max(p.patch_radius, 0.05));
     for (int i = 0; i < num_patches; i++)
     {
-      const Eigen::Vector2d c(-half_patch_field + 2.0 * half_patch_field * uniform(gen),
-                              -half_patch_field + 2.0 * half_patch_field * uniform(gen));
-      const int bx = std::min(cells - 1, static_cast<int>((c[0] + half_patch_field) / cell));
-      const int by = std::min(cells - 1, static_cast<int>((c[1] + half_patch_field) / cell));
-      patch_buckets[static_cast<size_t>(bx + cells * by)].push_back(c);
+      const Eigen::Vector2d centre(-half_patch_field + 2.0 * half_patch_field * rng.uniform(),
+                                   -half_patch_field + 2.0 * half_patch_field * rng.uniform());
+      patches.add(centre, centre);
     }
     auto in_patch = [&](const Eigen::Vector2d &pos) {
-      const int bx = static_cast<int>((pos[0] + half_patch_field) / cell);
-      const int by = static_cast<int>((pos[1] + half_patch_field) / cell);
-      for (int x = std::max(0, bx - 1); x <= std::min(cells - 1, bx + 1); x++)
-      {
-        for (int y = std::max(0, by - 1); y <= std::min(cells - 1, by + 1); y++)
-        {
-          for (const auto &c : patch_buckets[static_cast<size_t>(x + cells * y)])
-          {
-            if ((pos - c).squaredNorm() < p.patch_radius * p.patch_radius)
-            {
-              return true;
-            }
-          }
-        }
-      }
-      return false;
+      return patches.anyNear(pos, [&](const Eigen::Vector2d &centre) {
+        return (pos - centre).squaredNorm() < p.patch_radius * p.patch_radius;
+      });
     };
     // measure the patch area within the field, so that the density within patches is as specified
     const double sample_width = std::min(0.02, 0.1 * p.patch_radius);
@@ -229,20 +295,19 @@ void PneumatophoreGen::generateStems(std::mt19937 &gen)
   // from outside reach into it, keeping the mean density uniform
   const double half_tree_field = half_field + p.root_length;
   const double tree_area = 4.0 * half_tree_field * half_tree_field;
-  std::poisson_distribution<int> tree_count(p.trees_per_m2 * tree_area);
-  const int num_trees = tree_count(gen);
+  const int num_trees = rng.poisson(p.trees_per_m2 * tree_area);
   const double stems_per_metre_of_root = p.stems_per_m2 / (p.trees_per_m2 * p.roots_per_tree * p.root_length);
   int num_failed = 0;
   for (int t = 0; t < num_trees; t++)
   {
-    const Eigen::Vector2d tree(-half_tree_field + 2.0 * half_tree_field * uniform(gen),
-                               -half_tree_field + 2.0 * half_tree_field * uniform(gen));
-    const double angle_offset = 2.0 * kPi * uniform(gen);
+    const Eigen::Vector2d tree(-half_tree_field + 2.0 * half_tree_field * rng.uniform(),
+                               -half_tree_field + 2.0 * half_tree_field * rng.uniform());
+    const double angle_offset = 2.0 * kPi * rng.uniform();
     for (int r = 0; r < p.roots_per_tree; r++)
     {
       // evenly spread root directions, with some jitter
       const double angle =
-        angle_offset + 2.0 * kPi * (static_cast<double>(r) + 0.3 * (uniform(gen) - 0.5)) / p.roots_per_tree;
+        angle_offset + 2.0 * kPi * (static_cast<double>(r) + 0.3 * (rng.uniform() - 0.5)) / p.roots_per_tree;
       const Eigen::Vector2d along(std::cos(angle), std::sin(angle));
       const Eigen::Vector2d across(-along[1], along[0]);
       const int num = stem_count(stems_per_metre_of_root * p.root_length);
@@ -252,7 +317,7 @@ void PneumatophoreGen::generateStems(std::mt19937 &gen)
         for (int attempt = 0; attempt < 100 && !placed; attempt++)
         {
           const Eigen::Vector2d pos =
-            tree + along * (p.root_length * uniform(gen)) + across * (p.lateral_spread * normal(gen));
+            tree + along * (p.root_length * rng.uniform()) + across * (p.lateral_spread * rng.normal());
           if (std::abs(pos[0]) >= half_field || std::abs(pos[1]) >= half_field)
           {
             placed = true;  // outside of the field, so not needed
@@ -277,33 +342,24 @@ void PneumatophoreGen::generate(const PneumatophoreParams &params, unsigned int 
 {
   params_ = params;
   std::mt19937 gen(seed);
-  std::uniform_real_distribution<double> uniform(0.0, 1.0);
   generateStems(gen);
+  SceneRandom rng(gen);
   stem_width_ = StemWidthModel(params_.diameter, params_.footprint);
 
   // build the bucket grid. Each stem is added to every bucket that its maximum effective radius overlaps
   const double half_field = 0.5 * params_.plot_width + params_.margin;
   field_min_ = -half_field;
-  num_buckets_ = static_cast<int>(std::ceil(2.0 * half_field / bucket_width_));
-  buckets_.assign(static_cast<size_t>(num_buckets_ * num_buckets_), std::vector<int>());
+  BucketGrid2D<int> stem_buckets(field_min_, 2.0 * half_field, bucket_width_);
   const double max_radius = 0.5 * (stem_width_.enabled() ? stem_width_.maxWidth(params_.max_range) : params_.diameter);
   max_height_ = 0.0;
   for (size_t i = 0; i < stems_.size(); i++)
   {
     const Eigen::Vector3d &stem = stems_[i];
     max_height_ = std::max(max_height_, stem[2]);
-    const int x0 = std::max(0, static_cast<int>((stem[0] - max_radius - field_min_) / bucket_width_));
-    const int x1 = std::min(num_buckets_ - 1, static_cast<int>((stem[0] + max_radius - field_min_) / bucket_width_));
-    const int y0 = std::max(0, static_cast<int>((stem[1] - max_radius - field_min_) / bucket_width_));
-    const int y1 = std::min(num_buckets_ - 1, static_cast<int>((stem[1] + max_radius - field_min_) / bucket_width_));
-    for (int x = x0; x <= x1; x++)
-    {
-      for (int y = y0; y <= y1; y++)
-      {
-        buckets_[static_cast<size_t>(x + num_buckets_ * y)].push_back(static_cast<int>(i));
-      }
-    }
+    stem_buckets.addWithin(stem.head<2>(), max_radius, static_cast<int>(i));
   }
+  num_buckets_ = stem_buckets.size();
+  buckets_ = std::move(stem_buckets.buckets());
 
   // a lawnmower walking path within the plot
   const double half_plot = 0.5 * params_.plot_width;
@@ -340,8 +396,8 @@ void PneumatophoreGen::generate(const PneumatophoreParams &params, unsigned int 
     // a rotating hand-held scanner covers most directions. Directions are uniform over the band of zenith angles
     const double cos_min = std::cos(params_.min_zenith_deg * kPi / 180.0);
     const double cos_max = std::cos(params_.max_zenith_deg * kPi / 180.0);
-    const double dz = -(cos_max + (cos_min - cos_max) * uniform(gen));
-    const double phi = 2.0 * kPi * uniform(gen);
+    const double dz = -(cos_max + (cos_min - cos_max) * rng.uniform());
+    const double phi = 2.0 * kPi * rng.uniform();
     const double horizontal = std::sqrt(std::max(0.0, 1.0 - dz * dz));
     const Eigen::Vector3d dir(horizontal * std::cos(phi), horizontal * std::sin(phi), dz);
 

@@ -36,17 +36,21 @@ void usage(int exit_code = 1)
   std::cout << "             --clustered            - stems along cable roots radiating from trees, else random" << std::endl;
   std::cout << "             --cluster_spread 0.03  - standard deviation of stem distance from the cable roots (m)" << std::endl;
   std::cout << "             --patchy 0.5,0.3,0     - stems only in random circular patches (e.g. degraded areas), given" << std::endl;
-  std::cout << "                                      patch radius (m), ground cover fraction and relative density between" << std::endl;
+  std::cout << "                                      patch radius (m), ground cover fraction and the stem density" << std::endl;
+  std::cout << "                                      between patches, relative to within them" << std::endl;
   std::cout << "             --walk_spacing 1       - spacing of the lawnmower walking lines (m)" << std::endl;
   std::cout << "             --zenith 0,101.5       - range of ray zenith angles (degrees from straight down)" << std::endl;
   std::cout << "             --truth_cells 1,1,0.1  - also output pneumatophores_truth_cells.csv for cells of this size" << std::endl;
   std::cout << "             --footprint 0.01,0.003,0.05 - beam exit diameter (m), divergence (rad), detection threshold" << std::endl;
+  std::cout << "             --return_range surface - with --footprint, returns at range to the stem surface (default), or with" << std::endl;
+  std::cout << "                                      outline, where the beam axis meets the footprint-widened stem outline" << std::endl;
   std::cout << "             --rays 2000000         - number of rays" << std::endl;
   std::cout << "             --ground_returns       - keep ground returns as bounded rays (default: zero alpha)" << std::endl;
   std::cout << "             --trunks 0.1,0.2       - sparse trunks per m^2 and mean diameter (m), with a trunks.csv file" << std::endl;
   std::cout << "             --min_gap 0.5          - minimum gap between stem surfaces, in stem diameters (default 0)" << std::endl;
   std::cout << "             --overlapping          - independent (Poisson) stem positions, which may overlap, and a Poisson" << std::endl;
   std::cout << "                                      number of stems. Default: exact number of non-overlapping stems" << std::endl;
+  std::cout << "             These options apply only to pneumatophores" << std::endl;
   std::cout << std::endl;
   std::cout << "          forest trees.txt - generate from a comma-separated list of x,y,z,radius trees" << std::endl;
   std::cout << "          terrain mesh.ply - generate from a ground mesh" << std::endl;
@@ -58,7 +62,8 @@ double random(double x, double y){ return ray::random(x, y); }
 
 int rayCreate(int argc, char *argv[])
 {
-  ray::KeyChoice cloud_type({ "room", "building", "tree", "forest", "terrain", "field", "pneumatophores" });
+  ray::KeyChoice cloud_type({ "room", "building", "tree", "forest", "terrain", "field" });
+  ray::TextArgument pneumatophores_type("pneumatophores");
   ray::IntArgument seed(1, 1000000);
   ray::OptionalFlagArgument view_flag("view", 'v');
   ray::FileArgument input_file;
@@ -68,6 +73,7 @@ int rayCreate(int argc, char *argv[])
   ray::Vector3dArgument footprint(0.0, 1.0), patchy(0.0, 1000.0), truth_cells(0.0001, 1000.0);
   ray::DoubleArgument walk_spacing(0.01, 1000.0, 1.0), min_gap(0.0, 100.0);
   ray::Vector2dArgument zenith(0.0, 180.0), trunks(0.0, 100.0);
+  ray::KeyChoice return_range({ "surface", "outline" });
   ray::OptionalKeyValueArgument stems_option("stems_per_m2", 's', &stems_per_m2);
   ray::OptionalKeyValueArgument diameter_option("diameter", 'd', &diameter);
   ray::OptionalKeyValueArgument rays_option("rays", 'r', &num_rays);
@@ -79,25 +85,28 @@ int rayCreate(int argc, char *argv[])
   ray::OptionalKeyValueArgument trunks_option("trunks", 'k', &trunks);
   ray::OptionalKeyValueArgument zenith_option("zenith", 'z', &zenith);
   ray::OptionalKeyValueArgument truth_cells_option("truth_cells", 't', &truth_cells);
+  ray::OptionalKeyValueArgument return_range_option("return_range", 'e', &return_range);
   ray::OptionalFlagArgument clustered_flag("clustered", 'c'), ground_flag("ground_returns", 'g'),
     overlapping_flag("overlapping", 'o');
-  const std::vector<ray::OptionalArgument *> options = { &view_flag,     &stems_option,     &diameter_option,
-                                                         &rays_option,   &footprint_option, &clustered_flag,
-                                                         &ground_flag,   &spread_option,    &patchy_option,
-                                                         &walk_option,   &zenith_option,    &truth_cells_option, &overlapping_flag, &min_gap_option, &trunks_option };
-  bool from_seed = ray::parseCommandLine(argc, argv, { &cloud_type, &seed }, options);
-  bool from_file = ray::parseCommandLine(argc, argv, { &cloud_type, &input_file }, options);
-  if (!from_seed && !from_file)
+  bool from_seed = ray::parseCommandLine(argc, argv, { &cloud_type, &seed }, { &view_flag });
+  bool from_file = ray::parseCommandLine(argc, argv, { &cloud_type, &input_file }, { &view_flag });
+  // the pneumatophore options are accepted only for pneumatophores, which are generated from a seed
+  const bool pneumatophores = ray::parseCommandLine(
+    argc, argv, { &pneumatophores_type, &seed },
+    { &view_flag, &stems_option, &diameter_option, &rays_option, &footprint_option, &clustered_flag, &ground_flag,
+      &spread_option, &patchy_option, &walk_option, &zenith_option, &truth_cells_option, &overlapping_flag,
+      &min_gap_option, &trunks_option, &return_range_option });
+  if (!from_seed && !from_file && !pneumatophores)
     usage();
 
-  if (from_seed)
+  if (from_seed || pneumatophores)
   {
     ray::srand(seed.value());
   }
 
   ray::Cloud cloud;
   const double time_delta = 0.001;  // between rays
-  std::string type = cloud_type.selectedKey();
+  std::string type = pneumatophores ? "pneumatophores" : cloud_type.selectedKey();
   if (type == "room")
   {
     // create room
@@ -282,7 +291,7 @@ int rayCreate(int argc, char *argv[])
     }
     colourByTime(cloud.times, cloud.colours);
   }
-  else if (type == "pneumatophores" && from_seed)
+  else if (type == "pneumatophores")
   {
     ray::PneumatophoreParams params;
     params.stems_per_m2 = stems_per_m2.value();
@@ -316,6 +325,15 @@ int rayCreate(int argc, char *argv[])
       params.footprint.exit_diameter = footprint.value()[0];
       params.footprint.divergence = footprint.value()[1];
       params.footprint.threshold = footprint.value()[2];
+    }
+    if (return_range_option.isSet())
+    {
+      if (!footprint_option.isSet())
+      {
+        std::cerr << "Error: --return_range applies only with --footprint" << std::endl;
+        return 1;
+      }
+      params.footprint.range_to_outline = return_range.selectedKey() == "outline";
     }
     ray::PneumatophoreGen gen;
     try
