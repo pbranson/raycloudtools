@@ -28,8 +28,10 @@
 #include "raylib/raysplitter.h"
 #include "raylib/raythreads.h"
 
+#include <filesystem>
 #include <fstream>
 #include <random>
+#include <set>
 #include <sstream>
 
 #include "environment.h"
@@ -827,7 +829,10 @@ TEST(Basic, RayDensityEmptyTile)
 }
 
 /// Density estimated over 2 x 2 tiles (split by raysplit tiles, keeping ray starts) matches a single run over the
-/// whole domain, as the halo gives each tile's voxels exactly the rays that a single run would
+/// whole domain, as the halo gives each tile's voxels exactly the rays that a single run would. This holds for a split
+/// halo equal to raydensity's halo (the pool radius plus two voxels, when the split's clipped ray ends lie on voxel
+/// faces of the grid), and for the larger split halo of scripts/raydensity_tiles.sh (1.5 voxels more than the halo
+/// rounded up to whole voxels)
 TEST(Basic, RayDensityTiles)
 {
   ray::PneumatophoreParams scene;
@@ -853,59 +858,529 @@ TEST(Basic, RayDensityTiles)
   params.options.flat_top_compensation = false;
   params.options.stem_diameter = scene.diameter;
   params.options.footprint = scene.footprint;
-  const double halo = params.options.pool_radius + 2.0 * params.voxel_width;
+  const double w = params.voxel_width;
+  const double halo = params.options.pool_radius + 2.0 * w;  // raydensity's (default) halo
+  // the split halo of scripts/raydensity_tiles.sh
+  const double script_halo = (std::ceil(halo / w - 1e-9) + 1.5) * w;
 
   // a single tile over the whole domain
   params.tile_width = 2.0;
   EXPECT_TRUE(ray::estimateDensityTile("tiles_test.ply", params, "tiles_single.zarr"));
+  const std::vector<float> single = readZarrChunk("tiles_single.zarr/density/0.0.0");
+  const std::vector<float> single_hits = readZarrChunk("tiles_single.zarr/hits/0.0.0");
+  // the single chunk is (z, y, x) = (4, 4, 4) cells, each split chunk is (4, 2, 2)
+  ASSERT_EQ(single.size(), 64u);
+  ASSERT_EQ(single_hits.size(), 64u);
 
-  // 2 x 2 tiles
-  EXPECT_TRUE(
-    ray::splitTiles("tiles_test.ply", "tiles_test", params.origin, 1.0, halo, -1.0, 2.0, Eigen::Vector2i(2, 2)));
   params.tile_width = 1.0;
   params.num_tiles = Eigen::Vector2i(2, 2);
-  for (int i = 0; i < 2; i++)
+  for (const double split_halo : { halo, script_halo })
   {
-    for (int j = 0; j < 2; j++)
+    std::stringstream stub;
+    stub << "tiles_test_halo" << static_cast<int>(std::round(1000.0 * split_halo));
+    const std::string store = stub.str() + ".zarr";
+    EXPECT_TRUE(
+      ray::splitTiles("tiles_test.ply", stub.str(), params.origin, 1.0, split_halo, -1.0, 2.0, Eigen::Vector2i(2, 2)));
+    for (int i = 0; i < 2; i++)
     {
-      params.tile = Eigen::Vector2i(i, j);
-      std::stringstream name;
-      name << "tiles_test_" << i << "_" << j << ".ply";
-      EXPECT_TRUE(ray::estimateDensityTile(name.str(), params, "tiles_split.zarr"));
-    }
-  }
-  // compare: the single chunk is (z, y, x) = (4, 4, 4) cells, each split chunk is (4, 2, 2)
-  const std::vector<float> single = readZarrChunk("tiles_single.zarr/density/0.0.0");
-  ASSERT_EQ(single.size(), 64u);
-  int compared = 0;
-  for (int i = 0; i < 2; i++)
-  {
-    for (int j = 0; j < 2; j++)
-    {
-      std::stringstream name;
-      name << "tiles_split.zarr/density/0." << j << "." << i;
-      const std::vector<float> tile = readZarrChunk(name.str());
-      ASSERT_EQ(tile.size(), 16u);
-      for (int z = 0; z < 4; z++)
+      for (int j = 0; j < 2; j++)
       {
-        for (int y = 0; y < 2; y++)
+        params.tile = Eigen::Vector2i(i, j);
+        std::stringstream name;
+        name << stub.str() << "_" << i << "_" << j << ".ply";
+        EXPECT_TRUE(ray::estimateDensityTile(name.str(), params, store));
+      }
+    }
+    int compared = 0;
+    for (int i = 0; i < 2; i++)
+    {
+      for (int j = 0; j < 2; j++)
+      {
+        std::stringstream chunk;
+        chunk << "/0." << j << "." << i;
+        const std::vector<float> tile = readZarrChunk(store + "/density" + chunk.str());
+        const std::vector<float> hits = readZarrChunk(store + "/hits" + chunk.str());
+        ASSERT_EQ(tile.size(), 16u);
+        ASSERT_EQ(hits.size(), 16u);
+        for (int z = 0; z < 4; z++)
         {
-          for (int x = 0; x < 2; x++)
+          for (int y = 0; y < 2; y++)
           {
-            const float a = tile[static_cast<size_t>(x + 2 * (y + 2 * z))];
-            const float b = single[static_cast<size_t>((x + 2 * i) + 4 * ((y + 2 * j) + 4 * z))];
-            EXPECT_EQ(std::isnan(a), std::isnan(b));
-            if (!std::isnan(a) && !std::isnan(b))
+            for (int x = 0; x < 2; x++)
             {
-              EXPECT_NEAR(a, b, 1e-4 * std::max(1.0f, std::abs(b)));
-              compared++;
+              const size_t t = static_cast<size_t>(x + 2 * (y + 2 * z));
+              const size_t s = static_cast<size_t>((x + 2 * i) + 4 * ((y + 2 * j) + 4 * z));
+              const float a = tile[t], b = single[s];
+              EXPECT_EQ(std::isnan(a), std::isnan(b)) << "split halo " << split_halo;
+              if (!std::isnan(a) && !std::isnan(b))
+              {
+                EXPECT_NEAR(a, b, 1e-4 * std::max(1.0f, std::abs(b))) << "split halo " << split_halo;
+                EXPECT_NEAR(hits[t], single_hits[s], 1e-4 * std::max(1.0f, std::abs(single_hits[s])))
+                  << "split halo " << split_halo;
+                compared++;
+              }
             }
           }
         }
       }
     }
+    EXPECT_GT(compared, 40) << "split halo " << split_halo;
   }
-  EXPECT_GT(compared, 40);
+}
+
+/// The ratio of the total hits to the total G-weighted path length over all voxels of a grid
+double pooledGridDensity(const ray::DensityGrid &grid)
+{
+  double hits = 0.0, path = 0.0;
+  for (const auto &voxel : grid.voxels())
+  {
+    hits += voxel.numHits();
+    path += voxel.pathLength();
+  }
+  return path > 0.0 ? hits / path : 0.0;
+}
+
+/// The crossing estimator counts each hit ray's path to where it would have exited its voxel (plus the stem interior
+/// beyond the return), so in voxels much shorter than the mean free path it recovers N d of a field of vertical
+/// cylinders. Its bias is about -a G L / 2 for a chord L, from rays occluded within the voxel, whereas Beer-Lambert
+/// (path to the hit) is unbiased for randomly placed stems
+TEST(Basic, RayDensityCrossing)
+{
+  // many thin stems, so that the field's density over the scanned region varies little between realisations
+  const double stems_per_m2 = 300.0, diameter = 0.001;
+  const double frontal_area_density = stems_per_m2 * diameter;  // a = N d = 0.3 m^-1
+  const ray::Cuboid bounds(Eigen::Vector3d(0.5, 0.5, 0.5), Eigen::Vector3d(3.5, 3.5, 2.5));
+  const double vox_width = 0.1;
+  const Eigen::Vector3i dims(30, 30, 20);
+  unsigned seed = 21;
+  for (const double zenith : { 45.0, 90.0 })
+  {
+    ray::Cloud cloud = generateCylinderFieldCloud(zenith, stems_per_m2, diameter, 100000, seed++);
+    cloud.save("density_crossing.ply");
+    double estimates[2];
+    for (int k = 0; k < 2; k++)
+    {
+      ray::DensityGrid grid(bounds, vox_width, dims, ray::ElementDistribution::VerticalCylinder);
+      grid.setPathEstimator(k == 0 ? ray::PathEstimator::Crossing : ray::PathEstimator::BeerLambert);
+      grid.setStemDiameter(diameter);
+      ASSERT_TRUE(grid.calculateDensities("density_crossing.ply"));
+      estimates[k] = pooledGridDensity(grid);
+    }
+    std::cout << "zenith " << zenith << " deg: true N*d = " << frontal_area_density
+              << ", crossing estimate = " << estimates[0] << ", beer-lambert estimate = " << estimates[1] << std::endl;
+    // within 6%, which is mostly the variation of the (Poisson) field's density over the scanned region (about 2%)
+    EXPECT_NEAR(estimates[0], frontal_area_density, 0.06 * frontal_area_density);
+    EXPECT_NEAR(estimates[1], frontal_area_density, 0.06 * frontal_area_density);
+    // on the same rays, hit rays count a longer path, by about a G L / 2 for 0.1 m voxels (0.5% to 1.5%)
+    EXPECT_LT(estimates[0], estimates[1]);
+    EXPECT_GT(estimates[0], 0.97 * estimates[1]);
+  }
+}
+
+/// Reads a whole file as text, or an empty string if it doesn't exist
+std::string readTextFile(const std::string &file_name)
+{
+  std::ifstream ifs(file_name, std::ios::binary);
+  std::stringstream ss;
+  ss << ifs.rdbuf();
+  return ss.str();
+}
+
+/// Reads a chunk of float64 values from a Zarr store
+std::vector<double> readZarrChunkDouble(const std::string &file_name)
+{
+  std::ifstream ifs(file_name, std::ios::binary);
+  std::vector<double> data;
+  double value;
+  while (ifs.read(reinterpret_cast<char *>(&value), sizeof(double)))
+  {
+    data.push_back(value);
+  }
+  return data;
+}
+
+/// Writes a planar ground mesh z = slope . (x, y), as a grid of squares of width @c spacing over [min, max]^2
+void writePlaneMesh(const std::string &file_name, const Eigen::Vector2d &slope, double min, double max, double spacing)
+{
+  ray::Mesh mesh;
+  const int n = static_cast<int>(std::round((max - min) / spacing));
+  for (int j = 0; j <= n; j++)
+  {
+    for (int i = 0; i <= n; i++)
+    {
+      const double x = min + i * spacing, y = min + j * spacing;
+      mesh.vertices().push_back(Eigen::Vector3d(x, y, slope[0] * x + slope[1] * y));
+    }
+  }
+  for (int j = 0; j < n; j++)
+  {
+    for (int i = 0; i < n; i++)
+    {
+      const int v = i + (n + 1) * j;
+      mesh.indexList().push_back(Eigen::Vector3i(v, v + 1, v + n + 2));
+      mesh.indexList().push_back(Eigen::Vector3i(v, v + n + 2, v + n + 1));
+    }
+  }
+  EXPECT_TRUE(ray::writePlyMesh(file_name, mesh));
+}
+
+/// Layers are heights above the ground mesh: a sloped scene (the flat scene sheared vertically by the ground plane,
+/// which keeps each ray's horizontal path, so its hits and its G-weighted path length) estimated with the ground mesh
+/// matches the flat scene, up to the registration of the voxels to the ground. The same holds with a ground mesh much
+/// larger than the tile, which is cropped to the tile
+TEST(Basic, RayDensityGroundMesh)
+{
+  ray::PneumatophoreParams scene;
+  scene.plot_width = 2.0;
+  scene.margin = 1.5;
+  scene.num_rays = 200000;
+  ray::PneumatophoreGen gen;
+  gen.generate(scene, 13);
+  gen.cloud().save("ground_flat.ply");
+  const Eigen::Vector2d slope(0.1, -0.05);
+  ray::Cloud sloped = gen.cloud();
+  for (size_t i = 0; i < sloped.rayCount(); i++)
+  {
+    sloped.starts[i][2] += slope.dot(sloped.starts[i].head<2>());
+    sloped.ends[i][2] += slope.dot(sloped.ends[i].head<2>());
+  }
+  sloped.save("ground_sloped.ply");
+  writePlaneMesh("ground_small_mesh.ply", slope, -5.0, 5.0, 10.0);
+  writePlaneMesh("ground_large_mesh.ply", slope, -200.0, 200.0, 2.0);  // 80000 triangles, mostly far from the tile
+
+  ray::DensityTileParams params;
+  params.origin = Eigen::Vector2d(-1.0, -1.0);
+  params.tile_width = 2.0;
+  params.max_height = 0.3;
+  params.options.distribution = ray::ElementDistribution::VerticalCylinder;
+  params.options.path_estimator = ray::PathEstimator::PooledBeerLambert;
+  params.options.flat_top_compensation = false;
+  params.options.stem_diameter = scene.diameter;
+  EXPECT_TRUE(ray::estimateDensityTile("ground_flat.ply", params, "ground_flat.zarr"));
+  const std::vector<float> flat = readZarrChunk("ground_flat.zarr/density/0.0.0");
+  ASSERT_EQ(flat.size(), 12u);  // 2 x 2 cells of 1 m, 3 layers
+  // without the ground mesh, the sloped scene's layers are absolute heights, so differ
+  EXPECT_TRUE(ray::estimateDensityTile("ground_sloped.ply", params, "ground_absolute.zarr"));
+  const std::vector<float> absolute = readZarrChunk("ground_absolute.zarr/density/0.0.0");
+  ASSERT_EQ(absolute.size(), 12u);
+  for (const std::string mesh : { "ground_small_mesh", "ground_large_mesh" })
+  {
+    params.ground_mesh_file = mesh + ".ply";
+    EXPECT_TRUE(ray::estimateDensityTile("ground_sloped.ply", params, mesh + ".zarr"));
+    const std::vector<float> relative = readZarrChunk(mesh + ".zarr/density/0.0.0");
+    ASSERT_EQ(relative.size(), 12u);
+    double max_error = 0.0, max_absolute_error = 0.0;
+    for (size_t c = 0; c < flat.size(); c++)
+    {
+      ASSERT_FALSE(std::isnan(flat[c]));
+      ASSERT_FALSE(std::isnan(relative[c]));
+      max_error = std::max(max_error, std::abs(relative[c] / flat[c] - 1.0));
+      max_absolute_error = std::max(max_absolute_error, std::abs(absolute[c] / flat[c] - 1.0));
+      EXPECT_NEAR(relative[c], flat[c], 0.05 * flat[c]) << mesh << " cell " << c;
+    }
+    std::cout << mesh << ": largest relative difference from the flat scene " << max_error
+              << " with heights above ground, " << max_absolute_error << " with absolute heights" << std::endl;
+    EXPECT_GT(max_absolute_error, 3.0 * max_error);
+  }
+  EXPECT_NE(readTextFile("ground_large_mesh.zarr/.zattrs").find("\"heights_above_ground\": true"), std::string::npos);
+}
+
+/// The occlusion correction for a minimum gap between stems. A gap makes the stems more regular, leaving less free
+/// space between the widened stems, so increases the free path response. A scene generated with a minimum gap is
+/// estimated more accurately when the correction assumes the same gap
+TEST(Basic, RayDensityMinGap)
+{
+  for (const double rho : { 1.0, 2.0 })
+  {
+    const double no_gap = ray::freePathResponse(0.1, rho, 0.0, false);
+    const double gap = ray::freePathResponse(0.1, rho, 1.0, false);
+    std::cout << "free path response at solid fraction 0.1, width ratio " << rho << ": " << no_gap << " (no gap), "
+              << gap << " (gap of one diameter)" << std::endl;
+    EXPECT_GT(gap, no_gap + 0.01);
+  }
+
+  ray::PneumatophoreParams scene;
+  scene.plot_width = 1.0;
+  scene.margin = 1.5;
+  scene.num_rays = 300000;
+  scene.stems_per_m2 = 1000.0;
+  scene.min_gap_ratio = 1.0;
+  scene.footprint.exit_diameter = 0.01;
+  scene.footprint.divergence = 0.003;
+  scene.footprint.threshold = 0.05;
+  ray::PneumatophoreGen gen;
+  gen.generate(scene, 17);
+  gen.cloud().save("min_gap.ply");
+  const double half_plot = 0.5 * scene.plot_width;
+  double frontal_area = 0.0;
+  for (const auto &stem : gen.stems())
+  {
+    if (std::abs(stem[0]) < half_plot && std::abs(stem[1]) < half_plot)
+    {
+      frontal_area += scene.diameter * std::min(stem[2], 0.1);
+    }
+  }
+  const double truth = frontal_area / (scene.plot_width * scene.plot_width * 0.1);
+
+  ray::DensityTileParams params;
+  params.origin = Eigen::Vector2d(-half_plot, -half_plot);
+  params.tile_width = scene.plot_width;
+  params.max_height = 0.1;
+  params.options.distribution = ray::ElementDistribution::VerticalCylinder;
+  params.options.path_estimator = ray::PathEstimator::PooledBeerLambert;
+  params.options.flat_top_compensation = false;
+  params.options.stem_diameter = scene.diameter;
+  params.options.footprint = scene.footprint;
+  double estimates[2];
+  for (int k = 0; k < 2; k++)
+  {
+    params.options.min_gap_ratio = k == 0 ? 0.0 : scene.min_gap_ratio;
+    const std::string store = k == 0 ? "min_gap_0.zarr" : "min_gap_1.zarr";
+    EXPECT_TRUE(ray::estimateDensityTile("min_gap.ply", params, store));
+    const std::vector<float> density = readZarrChunk(store + "/density/0.0.0");
+    ASSERT_EQ(density.size(), 1u);
+    estimates[k] = density[0];
+  }
+  std::cout << "true N*d near ground at a minimum gap of one diameter: " << truth
+            << ", estimated assuming no gap: " << estimates[0] << ", assuming the gap: " << estimates[1] << std::endl;
+  EXPECT_LT(std::abs(estimates[1] - truth), std::abs(estimates[0] - truth));
+  EXPECT_LT(estimates[1], estimates[0]);
+}
+
+/// The Zarr store of a tile at georeferenced (e.g. UTM) coordinates: valid metadata, float32 data and float64
+/// coordinates that resolve the cell centres exactly, NaN for unobserved cells (here below the ground), the tile's
+/// description, and a second tile with different parameters is refused
+TEST(Basic, RayDensityZarr)
+{
+  ray::PneumatophoreParams scene;
+  scene.plot_width = 2.0;
+  scene.margin = 1.0;
+  scene.num_rays = 50000;
+  ray::PneumatophoreGen gen;
+  gen.generate(scene, 19);
+  const Eigen::Vector3d offset(400000.0, 6100000.0, 0.0);
+  ray::Cloud cloud = gen.cloud();
+  for (size_t i = 0; i < cloud.rayCount(); i++)
+  {
+    cloud.starts[i] += offset;
+    cloud.ends[i] += offset;
+  }
+  cloud.save("zarr_utm.ply");
+
+  ray::DensityTileParams params;
+  params.origin = Eigen::Vector2d(offset[0] - 1.0, offset[1] - 1.0);
+  params.tile_width = 1.0;
+  params.num_tiles = Eigen::Vector2i(2, 2);
+  params.tile = Eigen::Vector2i(1, 0);
+  params.cell_size = Eigen::Vector3d(0.5, 0.5, 0.1);
+  // three layers below the ground, which no ray reaches. The voxels just below the ground (within one voxel) take
+  // the neighbour prior of the voxels above it (DensityGrid::addNeighbourPriors), so are observed, and the layer just
+  // below the ground is partly observed
+  params.min_height = -0.3;
+  params.max_height = 0.3;
+  params.options.distribution = ray::ElementDistribution::VerticalCylinder;
+  params.options.path_estimator = ray::PathEstimator::PooledBeerLambert;
+  params.options.flat_top_compensation = false;
+  params.options.stem_diameter = scene.diameter;
+  params.description = "test tile";
+  const std::string store = "zarr_utm.zarr";
+  ASSERT_TRUE(ray::estimateDensityTile("zarr_utm.ply", params, store));
+
+  EXPECT_EQ(readTextFile(store + "/.zgroup"), "{\n  \"zarr_format\": 2\n}\n");
+  const std::string attrs = readTextFile(store + "/.zattrs");
+  ASSERT_GT(attrs.size(), 2u);
+  EXPECT_EQ(attrs.front(), '{');
+  EXPECT_EQ(attrs.substr(attrs.size() - 2), "}\n");
+  EXPECT_NE(attrs.find("\"origin\": [399999, 6099999]"), std::string::npos) << attrs;
+  EXPECT_NE(attrs.find("\"density_model\": \"vertical_cylinder\""), std::string::npos);
+  EXPECT_NE(attrs.find("\"estimator\": \"pooled\""), std::string::npos);
+  for (const std::string name : { "density", "mean_voxel_density", "patchiness_ratio", "hits", "weighted_path",
+                                  "observed_fraction", "solid_fraction" })
+  {
+    const std::string zarray = readTextFile(store + "/" + name + "/.zarray");
+    EXPECT_NE(zarray.find("\"dtype\": \"<f4\""), std::string::npos) << name;
+    EXPECT_NE(zarray.find("\"shape\": [6, 4, 4]"), std::string::npos) << name << ": " << zarray;
+    EXPECT_NE(zarray.find("\"chunks\": [6, 2, 2]"), std::string::npos) << name;
+    EXPECT_NE(zarray.find("\"fill_value\": \"NaN\""), std::string::npos) << name;
+    EXPECT_NE(zarray.find("\"order\": \"C\""), std::string::npos) << name;
+    EXPECT_NE(readTextFile(store + "/" + name + "/.zattrs").find("\"_ARRAY_DIMENSIONS\": [\"z\", \"y\", \"x\"]"),
+              std::string::npos)
+      << name;
+  }
+  // coordinates: float64 cell centres, exact at these values
+  for (const std::string name : { "x", "y", "z" })
+  {
+    EXPECT_NE(readTextFile(store + "/" + name + "/.zarray").find("\"dtype\": \"<f8\""), std::string::npos) << name;
+  }
+  const std::vector<double> xs = readZarrChunkDouble(store + "/x/0");
+  const std::vector<double> ys = readZarrChunkDouble(store + "/y/0");
+  const std::vector<double> zs = readZarrChunkDouble(store + "/z/0");
+  ASSERT_EQ(xs.size(), 4u);
+  ASSERT_EQ(ys.size(), 4u);
+  ASSERT_EQ(zs.size(), 6u);
+  for (int i = 0; i < 4; i++)
+  {
+    EXPECT_EQ(xs[static_cast<size_t>(i)], 399999.25 + 0.5 * i);
+    EXPECT_EQ(ys[static_cast<size_t>(i)], 6099999.25 + 0.5 * i);
+  }
+  for (int i = 0; i < 6; i++)
+  {
+    EXPECT_NEAR(zs[static_cast<size_t>(i)], -0.25 + 0.1 * i, 1e-12);
+  }
+  // this tile's chunk (z, y, x) = (6, 2, 2). The two lowest layers are unobserved: NaN, with observed fraction 0
+  const std::vector<float> density = readZarrChunk(store + "/density/0.0.1");
+  const std::vector<float> mean = readZarrChunk(store + "/mean_voxel_density/0.0.1");
+  const std::vector<float> observed = readZarrChunk(store + "/observed_fraction/0.0.1");
+  ASSERT_EQ(density.size(), 24u);
+  ASSERT_EQ(mean.size(), 24u);
+  ASSERT_EQ(observed.size(), 24u);
+  for (size_t c = 0; c < density.size(); c++)
+  {
+    if (c >= 8 && c < 12)
+    {
+      continue;  // the layer just below the ground
+    }
+    const bool below_ground = c < 8;
+    EXPECT_EQ(std::isnan(density[c]), below_ground) << c;
+    EXPECT_EQ(std::isnan(mean[c]), below_ground) << c;
+    EXPECT_EQ(observed[c] == 0.0f, below_ground) << c;
+    if (!below_ground)
+    {
+      EXPECT_GT(density[c], 0.0f);
+    }
+  }
+  // only this tile's chunk is written
+  EXPECT_FALSE(std::ifstream(store + "/density/0.0.0").good());
+  const std::string tile_info = readTextFile(store + "/tiles/1_0.json");
+  EXPECT_NE(tile_info.find("\"tile\": [1, 0]"), std::string::npos) << tile_info;
+  EXPECT_NE(tile_info.find("\"input\": \"zarr_utm.ply\""), std::string::npos);
+  EXPECT_NE(tile_info.find("\"description\": \"test tile\""), std::string::npos);
+
+  // another tile of the same domain and parameters is accepted, but not one with different parameters
+  params.tile = Eigen::Vector2i(0, 0);
+  EXPECT_TRUE(ray::estimateDensityTile("zarr_utm.ply", params, store));
+  EXPECT_TRUE(std::ifstream(store + "/tiles/0_0.json").good());
+  params.tile = Eigen::Vector2i(0, 1);
+  params.options.pool_radius = 0.1;
+  EXPECT_FALSE(ray::estimateDensityTile("zarr_utm.ply", params, store));
+  EXPECT_FALSE(std::ifstream(store + "/density/0.1.0").good());
+  EXPECT_FALSE(std::ifstream(store + "/tiles/0_1.json").good());
+  EXPECT_EQ(readTextFile(store + "/.zattrs"), attrs);
+}
+
+/// Splits a line of comma-separated values
+std::vector<std::string> splitCsvLine(const std::string &line)
+{
+  std::vector<std::string> fields;
+  std::stringstream ss(line);
+  std::string field;
+  while (std::getline(ss, field, ','))
+  {
+    fields.push_back(field);
+  }
+  return fields;
+}
+
+/// The density command line tools: rayrender density cells and profile, the option checks of rayrender, raydensity
+/// and raycreate, and raysplit tiles within a domain
+TEST(Basic, RayDensityTools)
+{
+  EXPECT_EQ(command("raycreate pneumatophores 1 --rays 100000 --stems_per_m2 50"), 0);
+  // cells from below the ground (unobserved, so nan, except within a voxel of the ground, from the neighbour prior)
+  // to above the stems, with the crossing estimator
+  EXPECT_EQ(
+    command("rayrender pneumatophores.ply top density --density_model vertical_cylinder --estimator crossing "
+            "--stem_diameter 0.01 --no_flat_top --pixel_width 0.05 --min_bound -1,-1,-0.3 --max_bound 1,1,0.6 "
+            "--cells tools_cells.csv --cell_size 1,1,0.1 --profile tools_profile.csv --output tools_density.png"),
+    0);
+  {
+    std::ifstream ifs("tools_cells.csv");
+    std::string line;
+    ASSERT_TRUE(std::getline(ifs, line));
+    EXPECT_EQ(line, "x_min,y_min,z_min,x_max,y_max,z_max,observed_fraction,hits,weighted_path,"
+                    "density_frontal_area_per_volume_Nd,mean_voxel_density_frontal_area_per_volume_Nd,"
+                    "patchiness_ratio");
+    int rows = 0, unobserved = 0, observed = 0;
+    while (std::getline(ifs, line))
+    {
+      const std::vector<std::string> fields = splitCsvLine(line);
+      ASSERT_EQ(fields.size(), 12u) << line;
+      rows++;
+      const double z_min = std::stod(fields[2]);
+      if (z_min < -0.2 + 1e-6)  // well below the ground
+      {
+        unobserved++;
+        EXPECT_EQ(std::stod(fields[6]), 0.0) << line;
+        for (size_t i = 7; i < 12; i++)
+        {
+          EXPECT_EQ(fields[i], "nan") << line;
+        }
+      }
+      else if (z_min > -1e-6 && z_min < 0.15)  // near-ground layers, within the stems
+      {
+        observed++;
+        EXPECT_GT(std::stod(fields[9]), 0.0) << line;
+        EXPECT_GT(std::stod(fields[10]), 0.0) << line;
+      }
+    }
+    EXPECT_EQ(rows, 2 * 2 * 9);
+    EXPECT_EQ(unobserved, 2 * 2 * 2);
+    EXPECT_EQ(observed, 2 * 2 * 2);
+  }
+  {
+    std::ifstream ifs("tools_profile.csv");
+    std::string line;
+    ASSERT_TRUE(std::getline(ifs, line));
+    EXPECT_EQ(line, "z_min,z_max,observed_voxels,total_voxels,mean_hits_per_voxel,density_frontal_area_per_volume_Nd,"
+                    "mean_voxel_density_frontal_area_per_volume_Nd,patchiness_ratio");
+    int rows = 0, unobserved = 0;
+    while (std::getline(ifs, line))
+    {
+      const std::vector<std::string> fields = splitCsvLine(line);
+      ASSERT_EQ(fields.size(), 8u) << line;
+      if (std::stod(fields[1]) < -0.05 + 1e-6)  // more than a voxel below the ground
+      {
+        EXPECT_EQ(fields[2], "0") << line;
+        EXPECT_EQ(fields[5], "nan") << line;
+        EXPECT_EQ(fields[6], "nan") << line;
+        unobserved++;
+      }
+      rows++;
+    }
+    EXPECT_EQ(rows, 18);  // 0.05 m layers over 0.9 m
+    EXPECT_EQ(unobserved, 5);
+  }
+
+  // density options require a density style, and raydensity requires the tile
+  EXPECT_NE(command("rayrender pneumatophores.ply top ends --cells tools_bad.csv"), 0);
+  EXPECT_NE(command("rayrender pneumatophores.ply top ends --estimator crossing"), 0);
+  EXPECT_NE(command("rayrender pneumatophores.ply top ends --profile tools_bad.csv"), 0);
+  EXPECT_NE(command("raydensity pneumatophores.ply tools_bad.zarr --origin 0,0 --tile_width 1 --tiles 1,1"), 0);
+  EXPECT_FALSE(std::ifstream("tools_bad.csv").good());
+  EXPECT_FALSE(std::ifstream("tools_bad.zarr/.zgroup").good());
+  // pneumatophore options only apply to pneumatophores
+  EXPECT_NE(command("raycreate room 1 --stems_per_m2 100"), 0);
+  EXPECT_NE(command("raycreate forest 1 --rays 1000"), 0);
+
+  // raysplit tiles within a domain of 2 x 2 tiles writes only those tiles, though the scan extends beyond them
+  copy("pneumatophores.ply tools_split.ply");
+  EXPECT_EQ(command("raysplit tools_split.ply tiles -1,-1 1 0.225 -1,2 2,2"), 0);
+  std::set<std::string> tiles;
+  for (const auto &entry : std::filesystem::directory_iterator("."))
+  {
+    const std::string name = entry.path().filename().string();
+    if (name.rfind("tools_split_", 0) == 0)
+    {
+      tiles.insert(name);
+    }
+  }
+  EXPECT_EQ(tiles, std::set<std::string>(
+                     { "tools_split_0_0.ply", "tools_split_0_1.ply", "tools_split_1_0.ply", "tools_split_1_1.ply" }));
+  EXPECT_EQ(command("raydensity tools_split_1_0.ply tools_split.zarr --origin -1,-1 --tile_width 1 --tiles 2,2 "
+                    "--tile 1,0 --stem_diameter 0.01"),
+            0);
+  EXPECT_TRUE(std::ifstream("tools_split.zarr/density/0.0.1").good());
+  EXPECT_TRUE(std::ifstream("tools_split.zarr/tiles/1_0.json").good());
 }
 
 /// End-to-end check on a synthetic hand-held scan of a random pneumatophore field with a finite beam footprint:
