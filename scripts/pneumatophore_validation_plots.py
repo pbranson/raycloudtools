@@ -39,6 +39,20 @@ DIAMETER = 0.01
 HALF = 3.0  # half the plot width (m)
 
 
+PLY_TYPES = {"float": "<f4", "float32": "<f4", "double": "<f8", "float64": "<f8", "uchar": "u1", "uint8": "u1",
+             "int": "<i4", "uint": "<u4", "short": "<i2", "ushort": "<u2", "char": "i1"}
+
+
+def ply_dtype(header):
+    """the vertex record type from a binary little-endian .ply header (float or double ray clouds)"""
+    fields = []
+    for line in header.decode("ascii", "replace").splitlines():
+        parts = line.split()
+        if len(parts) == 3 and parts[0] == "property":
+            fields.append((parts[2], PLY_TYPES[parts[1]]))
+    return np.dtype(fields)
+
+
 def run(cmd):
     subprocess.run(cmd, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -49,19 +63,17 @@ def read_csv(name):
 
 
 def read_rays(name):
-    """Reads a ray cloud .ply (float positions and ray vectors), returning starts, ends, times and colours"""
+    """Reads a ray cloud .ply (float or double precision), returning starts, ends, times and colours"""
     with open(name, "rb") as f:
         header = b""
         while not header.endswith(b"end_header\n"):
             header += f.readline()
-        dtype = np.dtype([("x", "<f4"), ("y", "<f4"), ("z", "<f4"), ("t", "<f8"), ("nx", "<f4"), ("ny", "<f4"),
-                          ("nz", "<f4"), ("r", "u1"), ("g", "u1"), ("b", "u1"), ("a", "u1")])
-        data = np.fromfile(f, dtype=dtype)
+        data = np.fromfile(f, dtype=ply_dtype(header))
+    ray = ("nx", "ny", "nz") if "nx" in data.dtype.names else ("rayx", "rayy", "rayz")
     ends = np.stack([data["x"], data["y"], data["z"]], axis=1).astype(np.float64)
-    starts = ends + np.stack([data["nx"], data["ny"], data["nz"]], axis=1)  # the ray vector is start - end
-    colours = np.stack([data["r"], data["g"], data["b"], data["a"]], axis=1)
-    return starts, ends, data["t"], colours
-
+    starts = ends + np.stack([data[r] for r in ray], axis=1)  # the ray vector is start - end
+    colours = np.stack([data["red"], data["green"], data["blue"], data["alpha"]], axis=1)
+    return starts, ends, data["time"], colours
 
 def scene(name, options, seed=11):
     """Generates a scene and its estimates (pooled estimator, 5 cm voxels, 1 x 1 x 0.1 m cells) in a subdirectory"""
