@@ -414,7 +414,7 @@ def run_job(job):
             text = open(rlog).read()
             m = re.search(r"mean effective width / diameter of ([0-9.e+-]+)", text)
             rho = float(m.group(1)) if m else 1.0
-            m = re.search(r"self-shadow correction: mean factor ([0-9.e+-]+)", text)
+            m = re.search(r"self-shadow correction(?: \(second order\))?: mean factor ([0-9.e+-]+)", text)
             ss = float(m.group(1)) if m else float("nan")
             voxel = float(re.search(r"--pixel_width ([0-9.]+)", render_args).group(1))
             pool = float(re.search(r"--pool_radius ([0-9.]+)", render_args).group(1))
