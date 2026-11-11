@@ -86,13 +86,25 @@ struct RAYLIB_EXPORT DensityOptions
   /// Nominal half-width (m) of the horizontal neighbourhood used by the pooled estimator and the occlusion
   /// correction. The neighbourhood is the (2k+1) x (2k+1) voxels centred on each voxel, for
   /// k = round(pool_radius / voxel width), so its actual half-width is (k + 1/2) voxel widths: +-0.075 m for 0.05 m
-  /// at 0.05 m voxels, and +-0.125 m for 0.1 m. Smaller resolves finer patchiness, but with fewer hits per
-  /// neighbourhood, which biases the estimate high in sparse areas (about +6% at 30 stems/m^2 for 0.05 m, +3% for 0.1
-  /// m). Don't adapt it to the number of hits, as that is a stopping rule that biases the estimate high.
+  /// at 0.05 m voxels, and +-0.125 m for 0.1 m. Smaller resolves finer patchiness, but each stem's shadow within its
+  /// own neighbourhood biases the mean of the voxel densities high by about 0.47 d_eff / W for a neighbourhood of width
+  /// W (+7% for 0.05 m, +4% for 0.1 m, with a 2.3 cm effective stem width; see self_shadow_correction), whatever the
+  /// number of rays. Don't adapt it to the number of hits, as that is a stopping rule that biases the estimate high.
   double pool_radius = 0.05;
   /// The minimum gap between stem surfaces assumed by the occlusion correction, in stem diameters (stem centres are
   /// at least d (1 + min_gap_ratio) apart). More regular spacing leaves less free space between the widened stems.
   double min_gap_ratio = 0.0;
+  /// For the pooled estimator with VerticalCylinder and a stem_diameter: correct each neighbourhood's density for
+  /// the stems' self-shadowing (experimental, off by default). A stem removes the free path behind it within its own
+  /// neighbourhood but not its own hits, so neighbourhoods holding stems have a higher hits / path than their share,
+  /// and the mean of the voxel densities (DensityCell::density) is biased high by about s d_eff / W^2, where W^2 is
+  /// the neighbourhood's area, s its meanExitDistance (0.473 W for a square) and d_eff the (G rho L weighted) mean
+  /// effective stem width (about +7% for 0.05 m voxels, the default pool radius and a 2.3 cm effective width). With
+  /// this option the neighbourhood's measured density is divided by 1 + s d_eff / W^2 before the occlusion correction.
+  /// The pooled cell density (DensityCell::pooledDensity), which is a path-weighted mean without this bias, is
+  /// unchanged. Derived for tall stems in a uniform field of horizontal ray directions; it overcorrects slightly
+  /// where stems end (their shadows are shorter) and in very regular stands
+  bool self_shadow_correction = false;
   /// Model the top of the cloud as a sharp boundary between air and a uniform medium (e.g. a grass or crop
   /// canopy), so the air above the highest point in each column is excluded. Not suited to elements of varying
   /// height such as pneumatophores, where it biases the upper layers.
@@ -215,6 +227,14 @@ struct RAYLIB_EXPORT DensityGrid
   inline void setPoolRadius(double radius) { pool_radius_ = radius; }
   /// Minimum gap between stem surfaces (in stem diameters) assumed by the occlusion correction
   inline void setMinGapRatio(double gap) { min_gap_ratio_ = gap; }
+  /// Correct the pooled neighbourhood densities for the stems' self-shadowing (DensityOptions::self_shadow_correction)
+  inline void setSelfShadowCorrection(bool correct) { self_shadow_correction_ = correct; }
+  /// The factor that converts a voxel's (corrected) hits to those without the self-shadow correction, for the pooled
+  /// cell density. 1 without the correction. @c index is the voxel's index in voxels()
+  inline double uncorrectedHitsScale(size_t index) const
+  {
+    return index < uncorrected_scale_.size() ? static_cast<double>(uncorrected_scale_[index]) : 1.0;
+  }
   /// Accumulate the effective width ratio of each ray segment, for applyOverlapCorrection. Requires the stem diameter
   void enableOverlapCorrection();
   /// Pool the voxel densities over neighbourhoods (PooledBeerLambert), and correct them for the space occupied by the
@@ -280,6 +300,8 @@ private:
   bool pooled_densities_ = false;  // whether applyOverlapCorrection has pooled the voxels
   double pool_radius_ = 0.05;
   double min_gap_ratio_ = 0.0;
+  bool self_shadow_correction_ = false;
+  std::vector<float> uncorrected_scale_;  // per voxel, uncorrected / corrected hits, with the self-shadow correction
   static constexpr double max_solid_fraction_ = 0.4;
   Eigen::Vector3i hit_voxel_;  // voxel of the end point of the ray currently being walked
   double hit_length_ = 0.0;    // length (in voxels) to the end point of the ray currently being walked
@@ -444,8 +466,9 @@ struct RAYLIB_EXPORT DensityCell
   int observed = 0;  // number of observed voxels
   int total = 0;     // number of voxels in the cell
   /// The cell's density: the mean of its observed voxel densities (each voxel weighted equally, so by volume). NaN
-  /// when no voxel is observed. This is the main output: it represents patchy cells correctly, but averaging noisy
-  /// voxel ratios biases it high by a few percent where neighbourhoods have few hits
+  /// when no voxel is observed. This is the main output: it represents patchy cells correctly, but each stem's shadow
+  /// within its own neighbourhood biases it high, by about 0.47 d_eff / W for neighbourhoods of width W, unless
+  /// DensityOptions::self_shadow_correction is set
   inline double density() const
   {
     return observed > 0 ? density_sum / static_cast<double>(observed) : std::numeric_limits<double>::quiet_NaN();

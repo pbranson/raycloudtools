@@ -72,6 +72,9 @@ void usage(int exit_code = 1)
   std::cout << "                                             assumed by the stem occlusion correction" << std::endl;
   std::cout << "                     --no_overlap_correction - with --stem_diameter: don't correct for stems hiding" << std::endl;
   std::cout << "                                             each other (footprint overlap and within-voxel occlusion)" << std::endl;
+  std::cout << "                     --self_shadow_correction - with --estimator pooled and --stem_diameter: correct the" << std::endl;
+  std::cout << "                                             neighbourhoods for the shadow each stem casts within its own" << std::endl;
+  std::cout << "                                             neighbourhood (experimental; the mean density reads high without)" << std::endl;
   std::cout << "                     --no_flat_top         - for density styles: disable the flat canopy top model" << std::endl;
   std::cout << "                                             (designed for grass/crops, it biases uneven stems)" << std::endl;
   std::cout << "                     --min_bound x,y,z     - optional bounds of the region to render, otherwise" << std::endl;
@@ -96,7 +99,7 @@ int rayRender(int argc, char *argv[])
   ray::IntArgument resolution(1, 20000, 512);
   ray::FileArgument cloud_file, image_file, transform_file, projection_file(false), profile_file(false);
   ray::OptionalFlagArgument mark_origin("mark_origin", 'm'), view_flag("view", 'v'), no_flat_top("no_flat_top", 'u'),
-    no_overlap("no_overlap_correction", 'k');
+    no_overlap("no_overlap_correction", 'k'), self_shadow("self_shadow_correction", 'w');
   ray::KeyChoice return_range({ "surface", "outline" });
   ray::OptionalKeyValueArgument return_range_option("return_range", 'j', &return_range);
   ray::OptionalKeyValueArgument resolution_option("resolution", 'r', &resolution);
@@ -125,7 +128,8 @@ int rayRender(int argc, char *argv[])
           &density_model_option, &min_sin_zenith_option, &profile_file_option, &stem_diameter_option,
           &footprint_option,     &min_bound_option,      &max_bound_option,    &no_flat_top,
           &estimator_option,     &cells_option,          &cell_size_option,    &max_sin_zenith_option,
-          &no_overlap,           &pool_radius_option,    &min_gap_option,      &return_range_option }))
+          &no_overlap,           &pool_radius_option,    &min_gap_option,      &return_range_option,
+          &self_shadow }))
   {
     usage();
   }
@@ -143,6 +147,7 @@ int rayRender(int argc, char *argv[])
                                                                    { "pool_radius", pool_radius_option.isSet() },
                                                                    { "min_gap", min_gap_option.isSet() },
                                                                    { "no_overlap_correction", no_overlap.isSet() },
+                                                                   { "self_shadow_correction", self_shadow.isSet() },
                                                                    { "no_flat_top", no_flat_top.isSet() },
                                                                    { "return_range", return_range_option.isSet() } };
   const bool cylinders = density_model_option.isSet() && density_model.selectedKey() == "vertical_cylinder";
@@ -155,7 +160,8 @@ int rayRender(int argc, char *argv[])
     }
     const bool cylinder_only = arg.first == "min_sin_zenith" || arg.first == "max_sin_zenith" ||
                                arg.first == "stem_diameter" || arg.first == "footprint" || arg.first == "min_gap" ||
-                               arg.first == "no_overlap_correction" || arg.first == "return_range";
+                               arg.first == "no_overlap_correction" || arg.first == "return_range" ||
+                               arg.first == "self_shadow_correction";
     if (arg.second && cylinder_only && !cylinders)
     {
       std::cerr << "Error: --" << arg.first << " requires --density_model vertical_cylinder" << std::endl;
@@ -176,6 +182,13 @@ int rayRender(int argc, char *argv[])
   ray::DensityOutputs density_outputs;
   density_options.flat_top_compensation = !no_flat_top.isSet();
   density_options.overlap_correction = !no_overlap.isSet();
+  density_options.self_shadow_correction = self_shadow.isSet();
+  if (self_shadow.isSet() &&
+      (!stem_diameter_option.isSet() || !estimator_option.isSet() || estimator.selectedKey() != "pooled"))
+  {
+    std::cerr << "Error: --self_shadow_correction requires --estimator pooled and --stem_diameter" << std::endl;
+    usage();
+  }
   density_options.min_gap_ratio = min_gap.value();
   if (pool_radius_option.isSet())
   {

@@ -23,6 +23,17 @@ struct RAYLIB_EXPORT PneumatophoreParams
   double diameter = 0.01;       // stem diameter (m)
   double mean_height = 0.25;    // mean stem height (m)
   double height_sd = 0.08;      // standard deviation of stem height (m), truncated to be positive
+  /// The distribution of stem heights. Normal: mean_height and height_sd, truncated below 0.02 m (a height_sd of 0
+  /// gives stems of one height, and a height above the scanner gives stems without tops in view). Uniform: between
+  /// min_height and max_height
+  enum class HeightDistribution
+  {
+    Normal,
+    Uniform
+  };
+  HeightDistribution height_distribution = HeightDistribution::Normal;
+  double min_height = 0.1;  // for the uniform height distribution (m)
+  double max_height = 0.4;  // for the uniform height distribution (m)
 
   // Stems are placed without overlapping each other (a hard-core process, by random sequential addition), with the
   // exact number of stems for the density. Otherwise stem positions are independent (Poisson), so stems may overlap
@@ -68,6 +79,14 @@ struct RAYLIB_EXPORT PneumatophoreParams
   // directions. The default omits upward rays, which see only the sky or canopy here
   double min_zenith_deg = 0.0;
   double max_zenith_deg = 101.5;
+  // measurement errors, drawn from a separate random sequence so that the scene and the ideal rays are unchanged
+  /// standard deviation (m) of Gaussian noise added to the range of every return (stem, trunk or ground), along its ray
+  double range_noise = 0.0;
+  /// standard deviation (m), per axis, of a slowly varying trajectory (pose) error: the recorded start and end of each
+  /// ray are both shifted by an offset interpolated linearly between independent Gaussian values every
+  /// pose_noise_interval metres along the walk (a translation error, as from SLAM drift; rotation is not modelled)
+  double pose_noise = 0.0;
+  double pose_noise_interval = 1.0;
 };
 
 /// Generates a synthetic pneumatophore field and its ray cloud. Stem returns are coloured green, ground returns

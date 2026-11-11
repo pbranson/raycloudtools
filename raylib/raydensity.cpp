@@ -369,7 +369,8 @@ bool estimateDensityTile(const std::string &cloud_file, const DensityTileParams 
         << ",\n  \"min_sin_zenith\": " << params.options.min_sin_zenith
         << ",\n  \"max_sin_zenith\": " << params.options.max_sin_zenith
         << ",\n  \"occlusion_correction\": " << (params.options.overlap_correction ? "true" : "false")
-        << ",\n  \"flat_top_compensation\": " << (params.options.flat_top_compensation ? "true" : "false");
+        << ",\n  \"flat_top_compensation\": " << (params.options.flat_top_compensation ? "true" : "false")
+        << (params.options.self_shadow_correction ? ",\n  \"self_shadow_correction\": true" : "");
   const std::string group_attrs = "{\n" + attrs.str() + "\n}\n";
   std::string existing;
   if (store.readText(".zattrs", existing) && existing != group_attrs)
