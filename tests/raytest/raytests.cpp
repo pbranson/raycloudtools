@@ -772,6 +772,9 @@ TEST(Basic, RayDensityPneumatophores)
     options.distribution = ray::ElementDistribution::VerticalCylinder;
     options.path_estimator = ray::PathEstimator::PooledBeerLambert;
     options.flat_top_compensation = false;
+    // a uniform (random) stand at 100 stems/m^2, which suits the larger pool (the default 0.05 m is about 7% high
+    // here, from few hits per neighbourhood; see docs/pneumatophore_density_method.md)
+    options.pool_radius = 0.1;
     options.profile_file = "pneumatophores_test_profile.csv";
     if (correct_footprint)
     {

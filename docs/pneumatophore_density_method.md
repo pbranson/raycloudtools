@@ -75,8 +75,11 @@ more regular than exponential.
 The response R(φ, ρ, g) = measured / true N d depends only on the solid fraction φ, the widening ratio
 ρ = d_eff/d, and the minimum gap g between stem surfaces (in diameters; centres at least d(1 + g) apart). No
 closed form was accurate, so R is computed by a deterministic 2D Monte Carlo simulation (random sequential
-addition of 1500 non-overlapping discs, 20 000 lines from random free points, fixed seed), tabulated on demand
-and interpolated (e.g. R(0.1, 2.25, 0) = 1.22; R(0.3, 2.25, 0) = 2.15). For each voxel, the neighbourhood's
+addition of 1500 non-overlapping discs and 10 000 lines from random free points, pooled over 64 independent
+realisations from a fixed seed), tabulated on demand and interpolated (e.g. R(0.079, 2.3, 0) = 1.15;
+R(0.2, 2.3, 0) = 1.50). A single realisation varies by 2–5% between seeds, which biased an earlier version by up
+to 4%; with 64 realisations the response varies by 0.2–0.9% between seeds, so the correction's own simulation
+noise adds under 1% to the estimates. For each voxel, the neighbourhood's
 measured density m and path-weighted mean ρ are used to solve m = a·R(π d a/4, ρ, g) for a.
 
 Limits: the solid fraction of the exclusion discs is capped at 0.4 (below the 0.547 random packing limit), so
@@ -91,20 +94,36 @@ set from field observations of how closely stems pack.
 
 ## 6. Validation (synthetic, pooled estimator, 5 cm voxels, 1 × 1 × 0.1 m cells)
 
+Plot totals (estimate / truth over the 36 cells of each layer), as the mean ± standard deviation over 8 independent
+scenes (`scripts/pneumatophore_seed_study.py`), for the default ±5 cm pool and for ±10 cm:
+
+| Scene | 0–0.1 m, ±5 cm | 0.1–0.2 m, ±5 cm | 0–0.1 m, ±10 cm | 0.1–0.2 m, ±10 cm | No correction, 0–0.1 m |
+|---|---|---|---|---|---|
+| Random 100 stems/m² | 1.070 ± 0.005 | 1.099 ± 0.004 | 1.034 ± 0.006 | 1.064 ± 0.006 | 1.095 |
+| Random 300 stems/m² | 1.036 ± 0.005 | 1.089 ± 0.003 | 1.005 ± 0.005 | 1.056 ± 0.002 | 1.095 |
+| Random 1000 stems/m² | 0.961 ± 0.005 | 1.033 ± 0.005 | 0.941 ± 0.002 | 1.009 ± 0.002 | 1.150 |
+| Patches of 0.3 m radius, 300 stems/m² within | 1.005 ± 0.007 | 1.055 ± 0.005 | 0.918 ± 0.009 | 0.976 ± 0.008 | 1.055 |
+
+(±10 cm figures from 4 scenes.) The standard deviations between scenes are under 1%, so the differences between
+rows are systematic biases, not sampling noise. Individual 1 m cells have a relative RMSE of 3–8% in the lowest
+two layers. The pool radius trades two biases: a larger pool has more hits per neighbourhood, reducing the
+upward bias of noisy ratios (most visible at low density), but averages over patches smaller than the pool, which
+reads low. ±10 cm suits fairly uniform stands, and ±5 cm patchy ones.
+
+Other cases (single scenes):
+
 | Case | Estimate / truth, lowest 0.1 m (and 0.1–0.2 m) |
 |---|---|
-| Random, 30 / 100 / 300 / 1000 / 1500 stems/m² | 1.06 / 1.04 / 1.03 / 0.95 / 0.93 (0.1–0.2 m: 1.10, 1.08, 1.08, 1.02, 0.99) |
-| Without the occlusion correction, 300 / 1500 stems/m² | 1.10 / 1.28 |
 | Patches of 0.5 m and 0.2 m radius, 300 stems/m² within | 0.99 (1.04) and 0.97 (1.01) |
 | Cable roots, 3 cm lateral spread | about 0.87 |
 | Sloped ground (10%), heights above a ground mesh (`raydensity --ground`) | within 0.4% of flat ground |
 | Same, but flattened with `raytranslate subtract` | 0.5–0.7 (it shifts each whole ray by the ground at its end) |
 | Tiled (`raysplit tiles` + `raydensity`) versus a single run | equal to float rounding |
 
-Residual biases: about +10 to +15% in the layer holding the stem tops (top hits are not modelled; using only
-shallower rays reduces this); about −7% in the lowest 0.1 m above 1000 stems/m²; +6% in very sparse areas
-(30 stems/m², from few hits per neighbourhood; a wider pool radius reduces it). Each scene is a single random seed
-on a 6 × 6 m plot, so individual figures carry a few percent of sampling noise.
+Residual biases: +14 to +17% in the layer holding the stem tops (top hits are not modelled; using only shallower
+rays reduces this); −4 to −6% in the lowest 0.1 m at 1000 stems/m²; and +3 to +10% at low densities from few hits
+per neighbourhood (pool radius dependent, above). The single-scene figures carry about 1% of sampling noise at the
+plot scale.
 
 ## 7. Sparse trunks in the bottom 0.3 m
 

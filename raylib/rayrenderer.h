@@ -85,10 +85,13 @@ double RAYLIB_EXPORT effectiveStemWidth(double diameter, double beam_diameter, d
 /// free path divided by N d_eff, for stems at solid fraction N pi d^2 / 4, seen by the beam with effective width
 /// width_ratio * d. It exceeds 1 because the free path excludes the stems' (widened) cross-sections, which leave less
 /// free space than if they overlapped (for which it is exactly 1). Paths start at random free points, as rays enter
-/// the stem layer at random points. Computed deterministically by a 2D Monte-Carlo simulation (fixed seed).
+/// the stem layer at random points. Computed deterministically by a 2D Monte-Carlo simulation (fixed seed), pooled
+/// over 64 independent realisations (each of 1500 stems and 10000 lines), giving a standard error of under 1%.
 /// min_gap_ratio is the minimum gap between stem surfaces in stem diameters, so that stem centres are at least
 /// d (1 + min_gap_ratio) apart.
-double RAYLIB_EXPORT freePathResponse(double solid_fraction, double width_ratio, double min_gap_ratio = 0.0);
+/// @c seed sets the simulation's random number sequence (the correction uses the default).
+double RAYLIB_EXPORT freePathResponse(double solid_fraction, double width_ratio, double min_gap_ratio = 0.0,
+                                      unsigned int seed = 12345);
 
 /// Lookup of freePathResponse, interpolated over a grid of values that are computed when first needed
 class RAYLIB_EXPORT StemResponseTable

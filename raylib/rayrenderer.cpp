@@ -603,25 +603,22 @@ inline double uniform01(std::mt19937 &gen)
 }
 }  // namespace
 
-double freePathResponse(double solid_fraction, double width_ratio, double min_gap_ratio)
+namespace
 {
-  if (solid_fraction <= 0.0)
-  {
-    return 1.0;
-  }
-  min_gap_ratio = std::max(0.0, min_gap_ratio);
-  const double separation_scale = (1.0 + min_gap_ratio) * (1.0 + min_gap_ratio);
-  solid_fraction = std::min(solid_fraction, 0.4 / separation_scale);
-  width_ratio = std::max(width_ratio, 1.0);
+/// One realisation of the free path simulation for freePathResponse, accumulating hits and free path length
+void freePathRealisation(double solid_fraction, double width_ratio, double min_gap_ratio, unsigned int seed,
+                         double &hits, double &path, double &density_out)
+{
   // non-overlapping stems of unit diameter, placed by random sequential addition in a square
   const int num_stems = 1500;
-  const int num_lines = 20000;
+  const int num_lines = 10000;
   const double diameter = 1.0;
   const double side = std::sqrt(num_stems * kPi * diameter * diameter / (4.0 * solid_fraction));
-  const double density = num_stems / (side * side);
-  std::mt19937 gen(12345);                                     // fixed seed, so the response is deterministic
+  density_out = num_stems / (side * side);
+  std::mt19937 gen(seed);
   const double separation = diameter * (1.0 + min_gap_ratio);  // minimum distance between stem centres
-  const double cell = std::max(separation, 0.5 * width_ratio * diameter);
+  const double radius = 0.5 * width_ratio * diameter;          // of the widened stems
+  const double cell = std::max(separation, radius);            // so stems within these distances are in adjacent cells
   const int cells = std::max(1, static_cast<int>(std::ceil(side / cell)));
   std::vector<std::vector<Eigen::Vector2d>> buckets(static_cast<size_t>(cells * cells));
   auto bucket = [&](double x) { return std::min(cells - 1, std::max(0, static_cast<int>(x / cell))); };
@@ -643,19 +640,17 @@ double freePathResponse(double solid_fraction, double width_ratio, double min_ga
     }
     return false;
   };
-  std::vector<Eigen::Vector2d> stems;
-  for (long long attempt = 0; static_cast<int>(stems.size()) < num_stems && attempt < 100000000LL; attempt++)
+  int placed = 0;
+  for (long long attempt = 0; placed < num_stems && attempt < 100000000LL; attempt++)
   {
     const Eigen::Vector2d pos(side * uniform01(gen), side * uniform01(gen));
     if (!near(pos, separation))
     {
-      stems.push_back(pos);
       buckets[static_cast<size_t>(bucket(pos[0]) + cells * bucket(pos[1]))].push_back(pos);
+      placed++;
     }
   }
   // lines from random points that are free of the widened stems, until their first hit or the edge of the square
-  const double radius = 0.5 * width_ratio * diameter;
-  double hits = 0.0, path = 0.0;
   for (int l = 0; l < num_lines; l++)
   {
     Eigen::Vector2d start;
@@ -677,25 +672,84 @@ double freePathResponse(double solid_fraction, double width_ratio, double min_ga
         t_max = std::min(t_max, -start[i] / dir[i]);
       }
     }
+    // walk the cells along the line. Any stem whose widened disc reaches a cell has its centre in that cell or an
+    // adjacent one, so once a hit lies within the current cell, no later cell can have an earlier hit
     double best = t_max;
-    for (const auto &c : stems)
+    int cx = bucket(start[0]), cy = bucket(start[1]);
+    const int step_x = dir[0] > 0.0 ? 1 : -1, step_y = dir[1] > 0.0 ? 1 : -1;
+    double next_x = std::abs(dir[0]) > 1e-12 ? ((cx + (step_x > 0 ? 1 : 0)) * cell - start[0]) / dir[0] :
+                                               std::numeric_limits<double>::max();
+    double next_y = std::abs(dir[1]) > 1e-12 ? ((cy + (step_y > 0 ? 1 : 0)) * cell - start[1]) / dir[1] :
+                                               std::numeric_limits<double>::max();
+    const double delta_x = std::abs(dir[0]) > 1e-12 ? cell / std::abs(dir[0]) : std::numeric_limits<double>::max();
+    const double delta_y = std::abs(dir[1]) > 1e-12 ? cell / std::abs(dir[1]) : std::numeric_limits<double>::max();
+    while (true)
     {
-      const Eigen::Vector2d rel = c - start;
-      const double b = rel.dot(dir);
-      const double disc = b * b - (rel.squaredNorm() - radius * radius);
-      if (disc >= 0.0)
+      for (int x = std::max(0, cx - 1); x <= std::min(cells - 1, cx + 1); x++)
       {
-        const double t = b - std::sqrt(disc);
-        if (t > 0.0 && t < best)
+        for (int y = std::max(0, cy - 1); y <= std::min(cells - 1, cy + 1); y++)
         {
-          best = t;
+          for (const auto &c : buckets[static_cast<size_t>(x + cells * y)])
+          {
+            const Eigen::Vector2d rel = c - start;
+            const double b = rel.dot(dir);
+            const double disc = b * b - (rel.squaredNorm() - radius * radius);
+            if (disc >= 0.0)
+            {
+              const double t = b - std::sqrt(disc);
+              if (t > 0.0 && t < best)
+              {
+                best = t;
+              }
+            }
+          }
         }
+      }
+      const double t_exit = std::min(next_x, next_y);
+      if (best <= t_exit || t_exit >= t_max)
+      {
+        break;
+      }
+      if (next_x < next_y)
+      {
+        cx += step_x;
+        next_x += delta_x;
+      }
+      else
+      {
+        cy += step_y;
+        next_y += delta_y;
+      }
+      if (cx < 0 || cy < 0 || cx >= cells || cy >= cells)
+      {
+        break;
       }
     }
     path += best;
     hits += best < t_max ? 1.0 : 0.0;
   }
-  return hits / (path * density * width_ratio * diameter);
+}
+}  // namespace
+
+double freePathResponse(double solid_fraction, double width_ratio, double min_gap_ratio, unsigned int seed)
+{
+  if (solid_fraction <= 0.0)
+  {
+    return 1.0;
+  }
+  min_gap_ratio = std::max(0.0, min_gap_ratio);
+  const double separation_scale = (1.0 + min_gap_ratio) * (1.0 + min_gap_ratio);
+  solid_fraction = std::min(solid_fraction, 0.4 / separation_scale);
+  width_ratio = std::max(width_ratio, 1.0);
+  // pool several independent realisations, as one realisation's response varies by about 2-3% between seeds
+  const int num_realisations = 64;
+  double hits = 0.0, path = 0.0, density = 0.0;
+  for (int i = 0; i < num_realisations; i++)
+  {
+    freePathRealisation(solid_fraction, width_ratio, min_gap_ratio, seed + 7919u * static_cast<unsigned int>(i), hits,
+                        path, density);
+  }
+  return hits / (path * density * width_ratio);
 }
 
 double StemResponseTable::response(double solid_fraction, double width_ratio)
@@ -792,10 +846,14 @@ void DensityGrid::applyOverlapCorrection()
           const double max_density =
             max_solid_fraction_ * 4.0 / (kPi * stem_diameter_ * (1.0 + min_gap_ratio_) * (1.0 + min_gap_ratio_));
           auto response = [&](double a) { return a * response_.response(0.25 * kPi * stem_diameter_ * a, rho); };
+          // as the response R >= 1, the true density is at most the measured density, so search below it. This
+          // only evaluates the response up to the measured solid fraction (the response is slow to compute near
+          // the packing limit)
           double a = max_density;
-          if (measured < response(max_density))
+          const double high_bound = std::min(measured, max_density);
+          if (measured <= response(high_bound))
           {
-            double low = 0.0, high = max_density;
+            double low = 0.0, high = high_bound;
             for (int it = 0; it < 40; it++)
             {
               const double mid = 0.5 * (low + high);
