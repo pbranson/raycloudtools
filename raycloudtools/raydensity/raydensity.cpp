@@ -143,6 +143,12 @@ int rayDensity(int argc, char *argv[])
   options.occlusion_radius = occlusion_option.isSet() ? occlusion_radius.value() : -1.0;
   options.ratio_bias_correction = ratio_bias.isSet();
   options.pooled_neighbour_priors = !no_priors.isSet();
+  if (self_shadow.isSet() &&
+      (!stem_option.isSet() || options.path_estimator != ray::PathEstimator::PooledBeerLambert))
+  {
+    std::cerr << "Error: --self_shadow_correction requires the pooled estimator and --stem_diameter" << std::endl;
+    usage();
+  }
   if (second_order.isSet() && !self_shadow.isSet())
   {
     std::cerr << "Error: --self_shadow_second_order requires --self_shadow_correction" << std::endl;
