@@ -1696,6 +1696,351 @@ std::vector<std::string> splitCsvLine(const std::string &line)
   return fields;
 }
 
+/// The hybrid estimate (DensityOptions::hybrid): each cell takes the small-window configuration where that observes
+/// at least 0.9 of its voxels, and otherwise the default window with the first-order self-shadow correction. Checks
+/// the per-cell choice against separate runs of the two, that the other outputs are the default window's, that it is
+/// deterministic, that tiles match a single run, and the option checks
+TEST(Basic, RayDensityHybrid)
+{
+  ray::PneumatophoreParams scene;
+  scene.plot_width = 2.0;
+  scene.margin = 4.0;
+  scene.num_rays = 56250;  // a quarter of the standard ray density, so some cells are poorly observed by single voxels
+  scene.stems_per_m2 = 300.0;
+  scene.footprint.exit_diameter = 0.01;
+  scene.footprint.divergence = 0.003;
+  scene.footprint.threshold = 0.05;
+  ray::PneumatophoreGen gen;
+  gen.generate(scene, 13);
+  gen.cloud().save("hybrid.ply");
+  const double half_plot = 0.5 * scene.plot_width;
+  const ray::Cuboid bounds(Eigen::Vector3d(-half_plot, -half_plot, 0.0), Eigen::Vector3d(half_plot, half_plot, 0.2));
+  const double voxel_width = 0.05;
+  const Eigen::Vector3i dims(40, 40, 4);
+  ray::CellLayout layout;
+  layout.min_bound = bounds.min_bound_;
+  layout.cell_size = Eigen::Vector3d(0.5, 0.5, 0.1);
+  layout.num_cells = Eigen::Vector3i(4, 4, 2);
+  ray::DensityOptions ss;
+  ss.distribution = ray::ElementDistribution::VerticalCylinder;
+  ss.path_estimator = ray::PathEstimator::PooledBeerLambert;
+  ss.flat_top_compensation = false;
+  ss.stem_diameter = scene.diameter;
+  ss.footprint = scene.footprint;
+  ss.self_shadow_correction = true;
+  ray::DensityOptions sw = ss;
+  sw.pool_radius = 0.0;
+  sw.self_shadow_second_order = true;
+  sw.occlusion_radius = 0.05;
+  sw.ratio_bias_correction = true;
+  sw.pooled_neighbour_priors = false;
+  ray::DensityOptions hybrid = ss;
+  hybrid.hybrid = true;
+  auto cells = [&](const ray::DensityOptions &options) {
+    int shift = 0;
+    auto grid = ray::estimateDensityGrid("hybrid.ply", bounds, voxel_width, dims, options, shift);
+    EXPECT_TRUE(grid != nullptr);
+    return grid ? ray::aggregateDensityCells(*grid, shift, Eigen::Vector3i(0, 0, 0), dims, layout) :
+                  std::vector<ray::DensityCell>();
+  };
+  const std::vector<ray::DensityCell> ss_cells = cells(ss), sw_cells = cells(sw), hybrid_cells = cells(hybrid);
+  ASSERT_EQ(hybrid_cells.size(), 32u);
+  ASSERT_EQ(ss_cells.size(), 32u);
+  ASSERT_EQ(sw_cells.size(), 32u);
+  int num_small = 0, num_pooled = 0, num_full = 0;
+  for (size_t c = 0; c < hybrid_cells.size(); c++)
+  {
+    const ray::DensityCell &h = hybrid_cells[c], &p = ss_cells[c], &s = sw_cells[c];
+    ASSERT_GT(h.observed, 0);
+    // the observed voxels, hits and path, and so the pooled density, are those of the default window
+    EXPECT_EQ(h.observed, p.observed);
+    EXPECT_EQ(h.total, p.total);
+    EXPECT_NEAR(h.pooledDensity(), p.pooledDensity(), 1e-9 * p.pooledDensity());
+    EXPECT_NEAR(h.hits, p.hits, 1e-9 * p.hits);
+    const bool small = s.observedFraction() >= hybrid.hybrid_min_observed;
+    if (small)
+    {
+      num_small++;
+      // the fraction of the observed voxels taking the single-voxel density
+      EXPECT_NEAR(h.hybridWeight(), static_cast<double>(s.observed) / static_cast<double>(h.observed), 1e-9);
+      if (s.observed == s.total)
+      {
+        num_full++;
+        EXPECT_NEAR(h.density(), s.density(), 1e-6 * s.density());
+      }
+    }
+    else
+    {
+      num_pooled++;
+      EXPECT_EQ(h.hybridWeight(), 0.0);
+      EXPECT_NEAR(h.density(), p.density(), 1e-9 * p.density());
+    }
+  }
+  std::cout << "hybrid: " << num_small << " cells take the single-voxel estimate (" << num_full
+            << " fully observed by it), " << num_pooled << " the default window" << std::endl;
+  EXPECT_GT(num_small, 0);
+  EXPECT_GT(num_pooled, 0);
+  EXPECT_GT(num_full, 0);
+  // deterministic
+  const std::vector<ray::DensityCell> again = cells(hybrid);
+  for (size_t c = 0; c < hybrid_cells.size(); c++)
+  {
+    EXPECT_EQ(again[c].density(), hybrid_cells[c].density());
+    EXPECT_EQ(again[c].hybridWeight(), hybrid_cells[c].hybridWeight());
+  }
+  // the hybrid needs the self-shadow correction (and so the pooled estimator and stem diameter)
+  ray::DensityOptions bad = hybrid;
+  bad.self_shadow_correction = false;
+  int shift = 0;
+  EXPECT_TRUE(ray::estimateDensityGrid("hybrid.ply", bounds, voxel_width, dims, bad, shift) == nullptr);
+  bad = hybrid;
+  bad.path_estimator = ray::PathEstimator::BeerLambert;
+  EXPECT_TRUE(ray::estimateDensityGrid("hybrid.ply", bounds, voxel_width, dims, bad, shift) == nullptr);
+
+  // tiles match a single run (the halo of the default window covers the single voxels' occlusion neighbourhood),
+  // including the per-cell choice and the hybrid weights
+  ray::DensityTileParams params;
+  params.origin = Eigen::Vector2d(-1.0, -1.0);
+  params.cell_size = Eigen::Vector3d(0.5, 0.5, 0.1);
+  params.max_height = 0.2;
+  params.options = hybrid;
+  params.tile_width = 2.0;
+  params.write_voxels = true;
+  ASSERT_TRUE(ray::estimateDensityTile("hybrid.ply", params, "hybrid_single.zarr"));
+  EXPECT_NE(readTextFile("hybrid_single.zarr/.zattrs").find("\"hybrid\": true"), std::string::npos);
+  EXPECT_EQ(readTextFile("hybrid_single.zarr/.zattrs").find("min_observed_fraction"), std::string::npos);
+  const std::vector<float> whole = readZarrChunk("hybrid_single.zarr/density/0.0.0");
+  const std::vector<float> whole_weight = readZarrChunk("hybrid_single.zarr/hybrid_weight/0.0.0");
+  const std::vector<float> whole_voxels = readZarrChunk("hybrid_single.zarr/voxel_density/0.0.0");
+  ASSERT_EQ(whole.size(), 32u);
+  ASSERT_EQ(whole_weight.size(), 32u);
+  ASSERT_EQ(whole_voxels.size(), 40u * 40u * 4u);
+  // the store's voxels (as chosen by their cells) average to its cells
+  double voxel_sum = 0.0;
+  int voxel_count = 0;
+  for (int z = 0; z < 2; z++)
+  {
+    for (int y = 0; y < 10; y++)
+    {
+      for (int x = 0; x < 10; x++)
+      {
+        const float v = whole_voxels[static_cast<size_t>(x + 40 * (y + 40 * z))];
+        if (!std::isnan(v))
+        {
+          voxel_sum += v;
+          voxel_count++;
+        }
+      }
+    }
+  }
+  ASSERT_GT(voxel_count, 0);
+  EXPECT_NEAR(voxel_sum / voxel_count, whole[0], 1e-4 * whole[0]);
+  params.tile_width = 1.0;
+  params.num_tiles = Eigen::Vector2i(2, 2);
+  params.write_voxels = false;
+  const double halo = hybrid.pool_radius + 2.0 * voxel_width;
+  params.halo = halo - 0.5 * voxel_width;
+  EXPECT_FALSE(ray::estimateDensityTile("hybrid.ply", params, "hybrid_small_halo.zarr"));
+  params.halo = -1.0;
+  EXPECT_TRUE(ray::splitTiles("hybrid.ply", "hybrid_tiles", params.origin, 1.0, halo + 1.5 * voxel_width, -1.0, 2.0,
+                              Eigen::Vector2i(2, 2)));
+  int compared = 0;
+  for (int i = 0; i < 2; i++)
+  {
+    for (int j = 0; j < 2; j++)
+    {
+      params.tile = Eigen::Vector2i(i, j);
+      std::stringstream name;
+      name << "hybrid_tiles_" << i << "_" << j << ".ply";
+      EXPECT_TRUE(ray::estimateDensityTile(name.str(), params, "hybrid_tiles.zarr"));
+      for (const std::string array : { "density", "hybrid_weight" })
+      {
+        std::stringstream chunk;
+        chunk << "hybrid_tiles.zarr/" << array << "/0." << j << "." << i;
+        const std::vector<float> tile = readZarrChunk(chunk.str());
+        const std::vector<float> &single = array == "density" ? whole : whole_weight;
+        ASSERT_EQ(tile.size(), 8u);
+        for (int z = 0; z < 2; z++)
+        {
+          for (int y = 0; y < 2; y++)
+          {
+            for (int x = 0; x < 2; x++)
+            {
+              const float a = tile[static_cast<size_t>(x + 2 * (y + 2 * z))];
+              const float b = single[static_cast<size_t>((x + 2 * i) + 4 * ((y + 2 * j) + 4 * z))];
+              EXPECT_EQ(std::isnan(a), std::isnan(b));
+              if (!std::isnan(a) && !std::isnan(b))
+              {
+                EXPECT_NEAR(a, b, 1e-4 * std::max(1.0f, std::abs(b))) << array;
+                compared++;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  EXPECT_EQ(compared, 64);
+
+  // the command line: --hybrid needs --self_shadow_correction, and sets its own single-voxel configuration
+  const std::string render = "rayrender hybrid.ply top density --density_model vertical_cylinder --no_flat_top "
+                             "--estimator pooled --stem_diameter 0.01 --footprint 0.01,0.003,0.05 --pixel_width 0.05 "
+                             "--min_bound -1,-1,0 --max_bound 1,1,0.2 ";
+  EXPECT_NE(command(render + "--hybrid --cells hybrid_bad.csv"), 0);
+  EXPECT_NE(command(render + "--self_shadow_correction --hybrid --no_neighbour_priors --cells hybrid_bad.csv"), 0);
+  EXPECT_NE(command(render + "--self_shadow_correction --hybrid --occlusion_radius 0.05 --cells hybrid_bad.csv"), 0);
+  EXPECT_NE(command("rayrender hybrid.ply top density --estimator pooled --stem_diameter 0.01 "
+                    "--self_shadow_correction --hybrid --cells hybrid_bad.csv"),
+            0);  // needs the vertical cylinder model
+  EXPECT_FALSE(std::ifstream("hybrid_bad.csv").good());
+  EXPECT_NE(command("raydensity hybrid.ply hybrid_bad.zarr --origin -1,-1 --tile_width 2 --tiles 1,1 --tile 0,0 "
+                    "--stem_diameter 0.01 --hybrid"),
+            0);
+  EXPECT_NE(command("raydensity hybrid.ply hybrid_bad.zarr --origin -1,-1 --tile_width 2 --tiles 1,1 --tile 0,0 "
+                    "--stem_diameter 0.01 --self_shadow_correction --hybrid --ratio_bias_correction"),
+            0);
+  EXPECT_FALSE(std::ifstream("hybrid_bad.zarr/.zgroup").good());
+  // the cells and profile get the hybrid_weight column; without --hybrid the columns are unchanged
+  ASSERT_EQ(command(render + "--self_shadow_correction --hybrid --cells hybrid_cells.csv --cell_size 0.5,0.5,0.1 "
+                             "--profile hybrid_profile.csv --output hybrid.png"),
+            0);
+  {
+    std::ifstream ifs("hybrid_cells.csv");
+    std::string line;
+    ASSERT_TRUE(std::getline(ifs, line));
+    EXPECT_EQ(line, "x_min,y_min,z_min,x_max,y_max,z_max,observed_fraction,hits,weighted_path,"
+                    "density_frontal_area_per_volume_Nd,pooled_density_frontal_area_per_volume_Nd,"
+                    "patchiness_ratio,hybrid_weight");
+    int rows = 0;
+    while (std::getline(ifs, line))
+    {
+      const std::vector<std::string> fields = splitCsvLine(line);
+      ASSERT_EQ(fields.size(), 13u) << line;
+      // cells in the order of the layout (x fastest)
+      EXPECT_NEAR(std::stod(fields[9]), hybrid_cells[static_cast<size_t>(rows)].density(), 1e-4 * std::stod(fields[9]));
+      rows++;
+    }
+    EXPECT_EQ(rows, 32);
+    std::ifstream profile("hybrid_profile.csv");
+    ASSERT_TRUE(std::getline(profile, line));
+    EXPECT_EQ(line.substr(line.size() - 14), ",hybrid_weight");
+  }
+}
+
+/// The observed-fraction mask (--min_observed_fraction): density, pooled density and patchiness are NaN in cells
+/// (and profile layers) below the threshold, the observed fraction and the sums are kept, and outputs without it are
+/// unchanged
+TEST(Basic, RayDensityObservedMask)
+{
+  ray::DensityCell cell;
+  cell.total = 10;
+  cell.observed = 8;
+  cell.hits = 4.0;
+  cell.weighted_path = 2.0;
+  cell.density_sum = 16.0;
+  cell.mask(0.0);
+  EXPECT_FALSE(cell.masked);
+  EXPECT_EQ(cell.density(), 2.0);
+  cell.mask(0.8);
+  EXPECT_FALSE(cell.masked);
+  cell.mask(0.9);
+  EXPECT_TRUE(cell.masked);
+  EXPECT_TRUE(std::isnan(cell.density()));
+  EXPECT_TRUE(std::isnan(cell.pooledDensity()));
+  EXPECT_TRUE(std::isnan(cell.patchinessRatio()));
+  EXPECT_EQ(cell.observedFraction(), 0.8);
+  EXPECT_EQ(cell.hits, 4.0);
+  ray::DensityCell empty;  // a cell without voxels (NaN observed fraction) is masked
+  empty.mask(0.5);
+  EXPECT_TRUE(empty.masked);
+
+  // rayrender: the cells and profile, from below the ground (unobserved) to above it
+  EXPECT_EQ(command("raycreate pneumatophores 3 --rays 100000 --stems_per_m2 300"), 0);
+  copy("pneumatophores.ply mask.ply");
+  const std::string render = "rayrender mask.ply top density --density_model vertical_cylinder --no_flat_top "
+                             "--estimator pooled --stem_diameter 0.01 --pixel_width 0.05 --min_bound -1,-1,-0.05 "
+                             "--max_bound 1,1,0.4 --cell_size 1,1,0.05 --output mask.png ";
+  ASSERT_EQ(command(render + "--cells mask_all.csv --profile mask_all_profile.csv"), 0);
+  ASSERT_EQ(command(render + "--cells mask_99.csv --profile mask_99_profile.csv --min_observed_fraction 0.988"), 0);
+  EXPECT_NE(command(render + "--min_observed_fraction 0.988"), 0);  // needs --cells or --profile
+  EXPECT_NE(command(render + "--cells mask_bad.csv --min_observed_fraction 1.5"), 0);
+  EXPECT_FALSE(std::ifstream("mask_bad.csv").good());
+  for (const std::string kind : { "", "_profile" })
+  {
+    std::ifstream all("mask_all" + kind + ".csv"), masked("mask_99" + kind + ".csv");
+    std::string a, b;
+    ASSERT_TRUE(std::getline(all, a));
+    ASSERT_TRUE(std::getline(masked, b));
+    EXPECT_EQ(a, b);  // the same columns
+    int rows = 0, num_masked = 0, num_kept = 0;
+    while (std::getline(all, a))
+    {
+      ASSERT_TRUE(std::getline(masked, b));
+      const std::vector<std::string> fa = splitCsvLine(a), fb = splitCsvLine(b);
+      ASSERT_EQ(fa.size(), fb.size());
+      // the observed fraction (of voxels, for the profile)
+      const double fraction = kind.empty() ? std::stod(fa[6]) : std::stod(fa[2]) / std::max(1.0, std::stod(fa[3]));
+      const size_t first = kind.empty() ? 9 : 5;  // density, pooled density, patchiness
+      for (size_t i = 0; i < fa.size(); i++)
+      {
+        if (i >= first && i < first + 3 && !(fraction >= 0.988))
+        {
+          EXPECT_EQ(fb[i], "nan") << b;
+        }
+        else
+        {
+          EXPECT_EQ(fa[i], fb[i]) << b;
+        }
+      }
+      if (!(fraction >= 0.988) && fa[first] != "nan")
+      {
+        num_masked++;
+      }
+      if (fraction >= 0.988)
+      {
+        num_kept++;
+      }
+      rows++;
+    }
+    EXPECT_GT(rows, 0);
+    EXPECT_GT(num_masked, 0) << kind;  // the lowest layers are not fully observed
+    EXPECT_GT(num_kept, 0) << kind;
+  }
+
+  // raydensity: the masked arrays are NaN, the observed fraction is kept, and the threshold is in .zattrs
+  ASSERT_EQ(command("raydensity mask.ply mask_all.zarr --origin -1,-1 --tile_width 2 --tiles 1,1 --tile 0,0 "
+                    "--heights -0.05,0.4 --cell_size 1,1,0.05 --stem_diameter 0.01"),
+            0);
+  ASSERT_EQ(command("raydensity mask.ply mask_99.zarr --origin -1,-1 --tile_width 2 --tiles 1,1 --tile 0,0 "
+                    "--heights -0.05,0.4 --cell_size 1,1,0.05 --stem_diameter 0.01 --min_observed_fraction 0.988"),
+            0);
+  EXPECT_EQ(readTextFile("mask_all.zarr/.zattrs").find("min_observed_fraction"), std::string::npos);
+  EXPECT_NE(readTextFile("mask_99.zarr/.zattrs").find("\"min_observed_fraction\": 0.988"), std::string::npos);
+  const std::vector<float> fraction = readZarrChunk("mask_99.zarr/observed_fraction/0.0.0");
+  EXPECT_EQ(fraction, readZarrChunk("mask_all.zarr/observed_fraction/0.0.0"));
+  int num_masked = 0;
+  for (const std::string name : { "density", "pooled_density", "patchiness_ratio", "solid_fraction", "hits" })
+  {
+    const std::vector<float> all = readZarrChunk("mask_all.zarr/" + name + "/0.0.0");
+    const std::vector<float> masked = readZarrChunk("mask_99.zarr/" + name + "/0.0.0");
+    ASSERT_EQ(all.size(), fraction.size());
+    ASSERT_EQ(masked.size(), fraction.size());
+    for (size_t c = 0; c < all.size(); c++)
+    {
+      if (fraction[c] < 0.988f && name != "hits")
+      {
+        EXPECT_TRUE(std::isnan(masked[c])) << name << " " << c;
+        num_masked += std::isnan(all[c]) ? 0 : 1;
+      }
+      else if (!std::isnan(all[c]))
+      {
+        EXPECT_EQ(masked[c], all[c]) << name << " " << c;
+      }
+    }
+  }
+  EXPECT_GT(num_masked, 0);
+}
+
 /// The density command line tools: rayrender density cells and profile, the option checks of rayrender, raydensity
 /// and raycreate, and raysplit tiles within a domain
 TEST(Basic, RayDensityTools)

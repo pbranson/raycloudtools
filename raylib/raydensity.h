@@ -81,6 +81,9 @@ struct RAYLIB_EXPORT DensityTileParams
   std::string ground_mesh_file;
   /// Also output the voxel densities (as heights above ground), not just the cells
   bool write_voxels = false;
+  /// Cells whose observed fraction is below this have NaN density, pooled_density, patchiness_ratio and
+  /// solid_fraction (see DensityCell::mask). The observed fraction is always written. 0 (the default) masks none
+  double min_observed_fraction = 0.0;
   DensityOptions options;
   /// Free text describing this tile's run (e.g. the command line), written with the tile's index, input and halo to
   /// tiles/i_j.json in the store. It is not in the store's attributes, which are identical for every tile
@@ -99,9 +102,12 @@ struct RAYLIB_EXPORT DensityTileParams
 ///   hits, weighted_path: the sums over the cell's observed voxels
 ///   observed_fraction: the fraction of the cell's voxels with enough rays for an estimate
 ///   solid_fraction: N pi d^2 / 4 for N d = density, when a stem diameter is given
+///   hybrid_weight: with DensityOptions::hybrid only, the fraction of the cell's observed voxels taking the
+///     single-voxel density (DensityCell::hybridWeight)
 /// and optionally voxel_density on dimensions (zv, yv, xv). Unobserved cells and voxels are NaN, except for the
-/// observed fraction (0). A tile that no ray crosses is valid: it is written as unobserved, with a warning. Returns
-/// false (with a message) on invalid parameters, a missing or unreadable input, or a failed write.
+/// observed fraction (0), as are the densities of cells masked by min_observed_fraction. A tile that no ray crosses
+/// is valid: it is written as unobserved, with a warning. Returns false (with a message) on invalid parameters, a
+/// missing or unreadable input, or a failed write.
 bool RAYLIB_EXPORT estimateDensityTile(const std::string &cloud_file, const DensityTileParams &params,
                                        const std::string &store_path);
 }  // namespace ray

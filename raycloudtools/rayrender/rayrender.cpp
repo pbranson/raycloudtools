@@ -88,6 +88,14 @@ void usage(int exit_code = 1)
   std::cout << "                                             --self_shadow_correction --self_shadow_second_order" << std::endl;
   std::cout << "                                             --occlusion_radius 0.05 --ratio_bias_correction" << std::endl;
   std::cout << "                                             --no_neighbour_priors" << std::endl;
+  std::cout << "                     --hybrid              - with --self_shadow_correction: each cell takes the single-voxel" << std::endl;
+  std::cout << "                                             configuration above where it observes at least 0.9 of the" << std::endl;
+  std::cout << "                                             cell's voxels, otherwise the pool_radius estimate (experimental," << std::endl;
+  std::cout << "                                             for clustered stems; adds a hybrid_weight column). Computed in" << std::endl;
+  std::cout << "                                             the same pass. Not with the single-voxel options above" << std::endl;
+  std::cout << "                     --min_observed_fraction 0.9 - in --cells and --profile, the density, pooled density" << std::endl;
+  std::cout << "                                             and patchiness are nan where the observed fraction is below" << std::endl;
+  std::cout << "                                             this (default 0: none; 0.9 is recommended for stems)" << std::endl;
   std::cout << "                     --no_flat_top         - for density styles: disable the flat canopy top model" << std::endl;
   std::cout << "                                             (designed for grass/crops, it biases uneven stems)" << std::endl;
   std::cout << "                     --min_bound x,y,z     - optional bounds of the region to render, otherwise" << std::endl;
@@ -108,14 +116,14 @@ int rayRender(int argc, char *argv[])
   ray::Vector3dArgument footprint(0.0, 1.0), min_bound(-1e10, 1e10), max_bound(-1e10, 1e10);
   ray::Vector3dArgument cell_size(0.0001, 1e6, Eigen::Vector3d(1.0, 1.0, 0.1));
   ray::DoubleArgument max_sin_zenith(0.0, 1.0), pool_radius(0.0, 100.0), min_gap(0.0, 100.0);
-  ray::DoubleArgument occlusion_radius(0.0, 100.0);
+  ray::DoubleArgument occlusion_radius(0.0, 100.0), min_observed_fraction(0.0, 1.0);
   ray::FileArgument cells_file(false);
   ray::IntArgument resolution(1, 20000, 512);
   ray::FileArgument cloud_file, image_file, transform_file, projection_file(false), profile_file(false);
   ray::OptionalFlagArgument mark_origin("mark_origin", 'm'), view_flag("view", 'v'), no_flat_top("no_flat_top", 'u'),
     no_overlap("no_overlap_correction", 'k'), self_shadow("self_shadow_correction", 'w'),
     second_order("self_shadow_second_order", 'S'), ratio_bias("ratio_bias_correction", 'R'),
-    no_priors("no_neighbour_priors", 'N');
+    no_priors("no_neighbour_priors", 'N'), hybrid("hybrid", 'H');
   ray::KeyChoice return_range({ "surface", "outline" });
   ray::OptionalKeyValueArgument return_range_option("return_range", 'j', &return_range);
   ray::OptionalKeyValueArgument resolution_option("resolution", 'r', &resolution);
@@ -134,6 +142,7 @@ int rayRender(int argc, char *argv[])
   ray::OptionalKeyValueArgument pool_radius_option("pool_radius", 'q', &pool_radius);
   ray::OptionalKeyValueArgument min_gap_option("min_gap", 'a', &min_gap);
   ray::OptionalKeyValueArgument occlusion_radius_option("occlusion_radius", 'O', &occlusion_radius);
+  ray::OptionalKeyValueArgument min_observed_option("min_observed_fraction", 'F', &min_observed_fraction);
   ray::OptionalKeyValueArgument stem_diameter_option("stem_diameter", 's', &stem_diameter);
   ray::OptionalKeyValueArgument footprint_option("footprint", 'b', &footprint);
   ray::OptionalKeyValueArgument min_bound_option("min_bound", 'n', &min_bound);
@@ -147,7 +156,7 @@ int rayRender(int argc, char *argv[])
           &estimator_option,     &cells_option,          &cell_size_option,    &max_sin_zenith_option,
           &no_overlap,           &pool_radius_option,    &min_gap_option,      &return_range_option,
           &self_shadow,          &second_order,          &occlusion_radius_option, &ratio_bias,
-          &no_priors }))
+          &no_priors,            &hybrid,                &min_observed_option }))
   {
     usage();
   }
@@ -171,6 +180,9 @@ int rayRender(int argc, char *argv[])
                                                                      occlusion_radius_option.isSet() },
                                                                    { "ratio_bias_correction", ratio_bias.isSet() },
                                                                    { "no_neighbour_priors", no_priors.isSet() },
+                                                                   { "hybrid", hybrid.isSet() },
+                                                                   { "min_observed_fraction",
+                                                                     min_observed_option.isSet() },
                                                                    { "no_flat_top", no_flat_top.isSet() },
                                                                    { "return_range", return_range_option.isSet() } };
   const bool cylinders = density_model_option.isSet() && density_model.selectedKey() == "vertical_cylinder";
@@ -185,7 +197,7 @@ int rayRender(int argc, char *argv[])
                                arg.first == "stem_diameter" || arg.first == "footprint" || arg.first == "min_gap" ||
                                arg.first == "no_overlap_correction" || arg.first == "return_range" ||
                                arg.first == "self_shadow_correction" || arg.first == "self_shadow_second_order" ||
-                               arg.first == "occlusion_radius";
+                               arg.first == "occlusion_radius" || arg.first == "hybrid";
     if (arg.second && cylinder_only && !cylinders)
     {
       std::cerr << "Error: --" << arg.first << " requires --density_model vertical_cylinder" << std::endl;
@@ -226,6 +238,26 @@ int rayRender(int argc, char *argv[])
               << std::endl;
     usage();
   }
+  if (hybrid.isSet() && !self_shadow.isSet())
+  {
+    std::cerr << "Error: --hybrid requires --self_shadow_correction" << std::endl;
+    usage();
+  }
+  if (hybrid.isSet() && (second_order.isSet() || occlusion_radius_option.isSet() || ratio_bias.isSet() ||
+                         no_priors.isSet()))
+  {
+    std::cerr << "Error: --hybrid sets its own single-voxel configuration, so can't be combined with "
+                 "--self_shadow_second_order, --occlusion_radius, --ratio_bias_correction or --no_neighbour_priors"
+              << std::endl;
+    usage();
+  }
+  if (min_observed_option.isSet() && !cells_option.isSet() && !profile_file_option.isSet())
+  {
+    std::cerr << "Error: --min_observed_fraction requires --cells or --profile" << std::endl;
+    usage();
+  }
+  density_options.hybrid = hybrid.isSet();
+  density_outputs.min_observed_fraction = min_observed_option.isSet() ? min_observed_fraction.value() : 0.0;
   density_options.self_shadow_second_order = second_order.isSet();
   density_options.occlusion_radius = occlusion_radius_option.isSet() ? occlusion_radius.value() : -1.0;
   density_options.ratio_bias_correction = ratio_bias.isSet();

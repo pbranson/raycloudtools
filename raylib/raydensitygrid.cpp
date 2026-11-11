@@ -381,6 +381,31 @@ void DensityGrid::applyOverlapCorrection()
   }
 }
 
+void DensityGrid::combineHybrid(const DensityGrid &small, double min_observed)
+{
+  small_density_.assign(voxels_.size(), 0.0f);
+  hybrid_weight_.assign(voxels_.size(), 0.0f);
+  hybrid_min_observed_ = min_observed;
+  size_t num_observed = 0, num_small = 0;
+  for (size_t i = 0; i < voxels_.size(); i++)
+  {
+    const Voxel &voxel = small.voxels_[i];
+    if (voxels_[i].numRays() <= min_voxel_hits)
+    {
+      continue;
+    }
+    num_observed++;
+    if (voxel.numRays() > min_voxel_hits)
+    {
+      small_density_[i] = static_cast<float>(small.voxelDensity(voxel));
+      hybrid_weight_[i] = 1.0f;
+      num_small++;
+    }
+  }
+  std::cout << "hybrid estimate: the single-voxel estimate observes " << num_small << " of the " << num_observed
+            << " observed voxels" << std::endl;
+}
+
 // When the cloud has a sharp change in density at the top (e.g. grass or wheat field) between air and the crop, then
 // this function adjusts the density estimation based on this two-phase density, rather than assuming the top voxel is
 // uniform density
@@ -546,7 +571,12 @@ double flatTopFraction(const DensityGrid &grid, int x, int y, int z, const Eigen
 double voxelAverageDensity(const DensityGrid &grid, const DensityGrid::Voxel &voxel, int x, int y, int z,
                            const Eigen::Vector3i &full_dims, int shift)
 {
-  return grid.voxelDensity(voxel) * flatTopFraction(grid, x, y, z, full_dims, shift);
+  // a voxel of the grid has its index, for the hybrid density
+  const DensityGrid::Voxel *const first = grid.voxels().data();
+  const double density = &voxel >= first && &voxel < first + grid.voxels().size() ?
+                           grid.voxelDensity(static_cast<size_t>(&voxel - first)) :
+                           grid.voxelDensity(voxel);
+  return density * flatTopFraction(grid, x, y, z, full_dims, shift);
 }
 
 std::unique_ptr<DensityGrid> estimateDensityGrid(const std::string &cloud_file, const Cuboid &bounds,
@@ -572,7 +602,17 @@ std::unique_ptr<DensityGrid> estimateDensityGrid(const std::string &cloud_file, 
   grid.setSelfShadowSecondOrder(options.self_shadow_second_order);
   grid.setOcclusionRadius(options.occlusion_radius);
   const bool pooled = options.path_estimator == PathEstimator::PooledBeerLambert;
-  if (pooled && options.ratio_bias_correction)
+  // the hybrid's single-voxel estimate needs the self-shadow correction (and so the stem diameter)
+  const bool hybrid =
+    options.hybrid && pooled && cylinders && options.self_shadow_correction && options.stem_diameter > 0.0;
+  if (options.hybrid && !hybrid)
+  {
+    std::cerr << "Error: the hybrid estimate requires the pooled estimator, the vertical cylinder model, the "
+                 "self-shadow correction and the stem diameter"
+              << std::endl;
+    return nullptr;
+  }
+  if (pooled && (options.ratio_bias_correction || hybrid))
   {
     grid.enableRatioBiasCorrection();
   }
@@ -628,12 +668,38 @@ std::unique_ptr<DensityGrid> estimateDensityGrid(const std::string &cloud_file, 
     grid.flatTopCompensation();
   }
 #endif
+  // the hybrid's single-voxel estimate, from a copy of the rays' sums (see DensityOptions::hybrid)
+  std::unique_ptr<DensityGrid> small;
+  if (hybrid)
+  {
+    small = std::make_unique<DensityGrid>(grid);
+    small->setPoolRadius(0.0);
+    small->setSelfShadowSecondOrder(true);
+    small->setOcclusionRadius(options.pool_radius);
+    small->setBlendNeighbourPriors(false);
+    if (!options.ratio_bias_correction)
+    {
+      grid.disableRatioBiasCorrection();
+    }
+    std::cout << "hybrid estimate, single-voxel neighbourhoods:" << std::endl;
+    small->applyOverlapCorrection();
+    std::cout << "hybrid estimate, pool radius neighbourhoods:" << std::endl;
+  }
   grid.applyOverlapCorrection();
 #if DENSITY_MIN_RAYS > 0
   // for stems, voxels no ray reached stay unobserved (NaN in the cells), rather than taking their neighbours' values
   grid.setFillUnobservedPriors(!cylinders);
   grid.addNeighbourPriors();
+  if (small)
+  {
+    small->setFillUnobservedPriors(false);
+    small->addNeighbourPriors();  // only shifts the voxels, as for grid
+  }
 #endif
+  if (small)
+  {
+    grid.combineHybrid(*small, options.hybrid_min_observed);
+  }
   return grid_ptr;
 }
 
@@ -650,6 +716,18 @@ std::vector<DensityCell> aggregateDensityCells(
   // bounds().min_bound_ + w (shift + 1/2) in each axis
   const Eigen::Vector3d first_centre =
     grid.bounds().min_bound_ + w * Eigen::Vector3d(shift + 0.5, shift + 0.5, shift + 0.5) - layout.min_bound;
+  // the hybrid estimate chooses per cell (see DensityOptions::hybrid), so it keeps both sums of each cell, and the
+  // observed voxels to report once the choice is made
+  const bool hybrid = grid.hybrid();
+  std::vector<double> hybrid_sums(hybrid ? cells.size() : 0, 0.0);
+  struct HybridVoxel
+  {
+    Eigen::Vector3i index;
+    Eigen::Vector3d centre;
+    double density, hybrid_density;
+    size_t cell;
+  };
+  std::vector<HybridVoxel> hybrid_voxels;
   for (int y = voxel_min[1]; y < voxel_max[1]; y++)
   {
     for (int x = voxel_min[0]; x < voxel_max[0]; x++)
@@ -672,24 +750,61 @@ std::vector<DensityCell> aggregateDensityCells(
         }
         DensityCell &cell = cells[layout.index(cx, cy, cz)];
         cell.total++;
-        const DensityGrid::Voxel &voxel = grid.voxels()[static_cast<size_t>(grid.getIndex(Eigen::Vector3i(x, y, z)))];
+        const size_t index = static_cast<size_t>(grid.getIndex(Eigen::Vector3i(x, y, z)));
+        const DensityGrid::Voxel &voxel = grid.voxels()[index];
         if (voxel.numRays() <= DensityGrid::min_voxel_hits)
         {
           continue;
         }
         const double fraction = flatTopFraction(grid, x, y, z, full_dims, shift);
-        const double density = grid.voxelDensity(voxel) * fraction;
+        const double density = grid.voxelDensity(grid.voxels()[index]) * fraction;
         cell.observed++;
         cell.density_sum += density;
-        // the pooled density is without the self-shadow correction (it is a path-weighted mean, without the bias)
-        cell.hits += voxel.numHits() * fraction *
-                     grid.uncorrectedHitsScale(static_cast<size_t>(grid.getIndex(Eigen::Vector3i(x, y, z))));
+        // the pooled density is without the self-shadow correction (it is a path-weighted mean, without the bias),
+        // and is that of the pool_radius estimate with the hybrid
+        cell.hits += voxel.numHits() * fraction * grid.uncorrectedHitsScale(index);
         cell.weighted_path += voxel.pathLength();
-        if (observed_voxel)
+        if (hybrid)
+        {
+          // the cell's sums for both choices: its densities are chosen once all its voxels are known
+          const double hybrid_density = grid.voxelDensity(index) * fraction;
+          hybrid_sums[layout.index(cx, cy, cz)] += hybrid_density;
+          cell.hybrid_weight_sum += grid.smallObserved(index) ? 1.0 : 0.0;
+          if (observed_voxel)
+          {
+            hybrid_voxels.push_back(
+              { Eigen::Vector3i(x, y, z), centre, density, hybrid_density, layout.index(cx, cy, cz) });
+          }
+        }
+        else if (observed_voxel)
         {
           observed_voxel(Eigen::Vector3i(x, y, z), centre, density);
         }
       }
+    }
+  }
+  if (hybrid)
+  {
+    std::vector<bool> small(cells.size(), false);
+    for (size_t c = 0; c < cells.size(); c++)
+    {
+      DensityCell &cell = cells[c];
+      // the fraction of the cell's voxels observed by the single-voxel estimate (all of which the pool radius
+      // estimate observes)
+      small[c] =
+        cell.total > 0 && cell.hybrid_weight_sum >= grid.hybridMinObserved() * static_cast<double>(cell.total) - 1e-9;
+      if (small[c])
+      {
+        cell.density_sum = hybrid_sums[c];
+      }
+      else
+      {
+        cell.hybrid_weight_sum = 0.0;
+      }
+    }
+    for (const HybridVoxel &voxel : hybrid_voxels)
+    {
+      observed_voxel(voxel.index, voxel.centre, small[voxel.cell] ? voxel.hybrid_density : voxel.density);
     }
   }
   return cells;

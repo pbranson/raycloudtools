@@ -26,7 +26,9 @@ and layer, as mean +- standard error over the seeds:
   t_gen, t_est    run time (s) of the scene generation and of each estimate
 bins.csv gives density / truth in bins of observed fraction (pooled over seeds and cells), and line_distance.csv by
 distance of the cell centre from the nearest walk line (block A). Block X (run only when named) holds the diagnostic
-runs of the failures. Block L (run only when named) is the footprint mismatch: scenes generated with a true beam
+runs of the failures, and block S (also only when named) compares the hybrid estimator (rayrender --hybrid) with the
+default, ss and the small-window configuration (sw) on a few scan geometries and noise levels. Block L (run only when
+named) is the footprint mismatch: scenes generated with a true beam
 footprint (default 10 mm, 3 mrad, 0.05; narrow 5 mm, 0.5 mrad; wide 20 mm, 5 mrad) and estimated assuming another
 (exit diameter and divergence x0.5-2, thresholds 0.02-0.15, joint errors that match d_eff at 2 m, an assumed
 diameter x threshold grid, and no footprint correction), each with the default estimator, the self-shadow correction
@@ -118,6 +120,18 @@ def pair(prefix="", **kw):
     base = render(**kw)
     p = prefix + " " if prefix else ""
     return [(p + "base", base), (p + "ss", base + " --self_shadow_correction")]
+
+
+SMALL_WINDOW = ("--self_shadow_correction --self_shadow_second_order --occlusion_radius 0.05 --ratio_bias_correction "
+                "--no_neighbour_priors")
+
+
+def hybrid_set(**kw):
+    """the default estimator, ss, the small-window configuration (sw) and the hybrid"""
+    base = render(**kw)
+    return [("base", base), ("ss", base + " --self_shadow_correction"),
+            ("sw", render(pool=0.0, **kw) + " " + SMALL_WINDOW),
+            ("hybrid", base + " --self_shadow_correction --hybrid")]
 
 
 def scene(stems=300, extra="", footprint=FOOTPRINT):
@@ -282,6 +296,18 @@ def build_configs():
     # no beam footprint: the stem tops' contribution without the footprint's widening of the top discs
     c.append(Config("X", "no footprint, heights normal 0.25, 300/m2", scene(300, footprint=""), pair(footprint=""),
                     layers=layers_to(0.5), pass_eligible=False))
+    # ---- S. the hybrid (not part of "all"): line spacing, scanner height, range and pose noise
+    for n in (300, 1000):
+        c.append(Config("S", f"walk 2 m, {n}/m2", scene(n, "--walk_spacing 2"), hybrid_set(), pass_eligible=True))
+        c.append(Config("S", f"scanner 2.0 m, {n}/m2", scene(n, "--scanner_height 2.0"), hybrid_set(),
+                        pass_eligible=True))
+    for sd in (0.01, 0.02):
+        c.append(Config("S", f"range noise {sd}, 300/m2", scene(300, f"--range_noise {sd}"), hybrid_set(),
+                        pass_eligible=True))
+    c.append(Config("S", "pose noise 0.02 per 0.5 m, 300/m2", scene(300, "--pose_noise 0.02,0.5"), hybrid_set(),
+                    pass_eligible=True))
+    c.append(Config("S", "cable roots 150/m2, walk 2 m", scene(150, "--clustered --walk_spacing 2"), hybrid_set(),
+                    pass_eligible=False))
     return c
 
 # ---- L. footprint mismatch: scenes generated with a true beam footprint, estimated assuming another one
@@ -414,7 +440,10 @@ def run_job(job):
             text = open(rlog).read()
             m = re.search(r"mean effective width / diameter of ([0-9.e+-]+)", text)
             rho = float(m.group(1)) if m else 1.0
-            m = re.search(r"self-shadow correction(?: \(second order\))?: mean factor ([0-9.e+-]+)", text)
+            # prefer the pool radius estimate's factor (with the hybrid its single voxels also report a
+            # "(second order)" factor); the small-window configuration reports only the second-order one
+            m = re.search(r"self-shadow correction: mean factor ([0-9.e+-]+)", text) or \
+                re.search(r"self-shadow correction \(second order\): mean factor ([0-9.e+-]+)", text)
             ss = float(m.group(1)) if m else float("nan")
             voxel = float(re.search(r"--pixel_width ([0-9.]+)", render_args).group(1))
             pool = float(re.search(r"--pool_radius ([0-9.]+)", render_args).group(1))
@@ -614,8 +643,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     configs = build_configs()
     parser.add_argument("--blocks", default="all",
-                        help="comma separated block letters (A-J, L for the footprint mismatch and X for the "
-                        "diagnostics), or all (A-J)")
+                        help="comma separated block letters (A-J, L for the footprint mismatch, S for the hybrid "
+                        "and X for the diagnostics), or all (A-J)")
     parser.add_argument("--configs", default="", help="only configurations whose label matches this regex")
     parser.add_argument("--seeds", default=SEEDS)
     parser.add_argument("--rays_per_m", type=float, default=56250.0)
