@@ -5,3 +5,4 @@ gitignored/
 install/
 test_results/
 treetools/
+__pycache__/
