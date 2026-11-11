@@ -9,6 +9,7 @@
 #include <functional>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -163,23 +164,79 @@ void PneumatophoreGen::generateStems(std::mt19937 &gen)
     return Eigen::Vector2d(-half_field + 2.0 * half_field * rng.uniform(),
                            -half_field + 2.0 * half_field * rng.uniform());
   };
+  // stem diameters, in classes of one diameter. A fixed diameter draws no random numbers
+  using Diameters = PneumatophoreParams::DiameterDistribution;
+  const bool fixed_diameter = p.diameter_distribution == Diameters::Fixed;
+  class_diameters_.assign(1, p.diameter);
+  stem_classes_.clear();
+  double max_diameter = p.diameter;
+  double mean_square_diameter = p.diameter * p.diameter;
+  std::map<long long, int> log_normal_classes;  // class index by diameter in units of 0.1 mm
+  const double log_normal_sigma2 = std::log(1.0 + (p.diameter_sd / p.diameter) * (p.diameter_sd / p.diameter));
+  if (p.diameter_distribution == Diameters::Mixture)
+  {
+    class_diameters_.push_back(p.mixture_diameter);
+    max_diameter = std::max(p.diameter, p.mixture_diameter);
+    mean_square_diameter = (1.0 - p.mixture_fraction) * p.diameter * p.diameter +
+                           p.mixture_fraction * p.mixture_diameter * p.mixture_diameter;
+  }
+  else if (p.diameter_distribution == Diameters::LogNormal)
+  {
+    class_diameters_.clear();
+    max_diameter = 3.0 * p.diameter;
+    mean_square_diameter = p.diameter * p.diameter + p.diameter_sd * p.diameter_sd;
+  }
+  auto random_class = [&]() {
+    if (p.diameter_distribution == Diameters::Mixture)
+    {
+      return rng.uniform() < p.mixture_fraction ? 1 : 0;
+    }
+    if (p.diameter_distribution == Diameters::LogNormal)
+    {
+      const double mu = std::log(p.diameter) - 0.5 * log_normal_sigma2;
+      long long tenths;
+      do
+      {
+        tenths = std::llround(1e4 * std::exp(mu + std::sqrt(log_normal_sigma2) * rng.normal()));
+      } while (tenths < 1 || 1e-4 * static_cast<double>(tenths) > max_diameter);
+      const auto found = log_normal_classes.find(tenths);
+      if (found != log_normal_classes.end())
+      {
+        return found->second;
+      }
+      const int index = static_cast<int>(class_diameters_.size());
+      class_diameters_.push_back(1e-4 * static_cast<double>(tenths));
+      log_normal_classes[tenths] = index;
+      return index;
+    }
+    return 0;
+  };
+  // the diameter class of the next stem to be placed. It is kept until that stem is placed, so that the diameters
+  // of the placed stems follow the distribution even where large stems are harder to place
+  int next_class = random_class();
   // stems as a fraction of ground area, at the (local) density stems_per_m2
-  const double solid_fraction = p.stems_per_m2 * kPi * p.diameter * p.diameter / 4.0;
-  // stem centres are at least this far apart
+  const double solid_fraction = fixed_diameter ? p.stems_per_m2 * kPi * p.diameter * p.diameter / 4.0 :
+                                                 p.stems_per_m2 * kPi * mean_square_diameter / 4.0;
+  // stem centres are at least this far apart (for stems of the fixed diameter)
   const double separation = p.diameter * (1.0 + std::max(0.0, p.min_gap_ratio));
   const double separation_scale = (separation / p.diameter) * (separation / p.diameter);
+  const double max_separation = max_diameter * (1.0 + std::max(0.0, p.min_gap_ratio));
   if (p.hard_core && solid_fraction * separation_scale > max_solid_fraction)
   {
     std::stringstream ss;
-    ss << "stems of diameter " << p.diameter << " m cannot be placed with gaps of at least " << p.min_gap_ratio
-       << " diameters at " << p.stems_per_m2 << " per m^2: the solid fraction (N pi d^2 / 4) of " << solid_fraction
-       << " exceeds " << max_solid_fraction / separation_scale
+    ss << "stems of " << (fixed_diameter ? "" : "mean ") << "diameter " << p.diameter
+       << " m cannot be placed with gaps of at least " << p.min_gap_ratio << " diameters at " << p.stems_per_m2
+       << " per m^2: the solid fraction (N pi d^2 / 4) of " << solid_fraction << " exceeds "
+       << max_solid_fraction / separation_scale
        << " (for the exclusion discs, near the random packing limit of 0.547). That is, at most "
-       << max_solid_fraction * 4.0 / (kPi * separation * separation) << " stems per m^2";
+       << (fixed_diameter ? max_solid_fraction * 4.0 / (kPi * separation * separation) :
+                            max_solid_fraction * 4.0 / (kPi * mean_square_diameter * separation_scale))
+       << " stems per m^2";
     throw std::runtime_error(ss.str());
   }
-  // the placed stems' positions, to reject candidate stems that would overlap them (a hard-core process)
-  BucketGrid2D<Eigen::Vector2d> placed_stems(-half_field, 2.0 * half_field, std::max(separation, 1e-4));
+  // the placed stems' positions and diameters, to reject candidate stems that would overlap them (a hard-core
+  // process)
+  BucketGrid2D<Eigen::Vector3d> placed_stems(-half_field, 2.0 * half_field, std::max(max_separation, 1e-4));
   // sparse trunks, not overlapping each other
   trunks_.clear();
   const int num_trunks = static_cast<int>(std::round(p.trunks_per_m2 * field_area));
@@ -203,21 +260,26 @@ void PneumatophoreGen::generateStems(std::mt19937 &gen)
   }
   // accepts a stem unless it overlaps an existing one (when hard_core), or a trunk
   auto try_add = [&](const Eigen::Vector2d &pos) {
-    if (p.hard_core && placed_stems.anyNear(pos, [&](const Eigen::Vector2d &stem) {
-          return (pos - stem).squaredNorm() < separation * separation;
+    const double diameter = class_diameters_[static_cast<size_t>(next_class)];
+    if (p.hard_core && placed_stems.anyNear(pos, [&](const Eigen::Vector3d &stem) {
+          const double sep =
+            fixed_diameter ? separation : 0.5 * (diameter + stem[2]) * (1.0 + std::max(0.0, p.min_gap_ratio));
+          return (pos - stem.head<2>()).squaredNorm() < sep * sep;
         }))
     {
       return false;
     }
     for (const auto &t : trunks_)
     {
-      if ((pos - t.head<2>()).norm() < 0.5 * (t[2] + p.diameter))
+      if ((pos - t.head<2>()).norm() < 0.5 * (t[2] + diameter))
       {
         return false;
       }
     }
-    placed_stems.add(pos, pos);
+    placed_stems.add(pos, Eigen::Vector3d(pos[0], pos[1], diameter));
     stems_.emplace_back(pos[0], pos[1], random_height());
+    stem_classes_.push_back(next_class);
+    next_class = random_class();
     return true;
   };
   // the number of stems to place in an area: exact (rounded) when hard_core, otherwise Poisson distributed
@@ -348,13 +410,22 @@ void PneumatophoreGen::generate(const PneumatophoreParams &params, unsigned int 
   std::mt19937 gen(seed);
   generateStems(gen);
   SceneRandom rng(gen);
-  stem_width_ = StemWidthModel(params_.diameter, params_.footprint);
+  class_widths_.clear();
+  for (const double diameter : class_diameters_)
+  {
+    class_widths_.emplace_back(diameter, params_.footprint);
+  }
 
   // build the bucket grid. Each stem is added to every bucket that its maximum effective radius overlaps
   const double half_field = 0.5 * params_.plot_width + params_.margin;
   field_min_ = -half_field;
   BucketGrid2D<int> stem_buckets(field_min_, 2.0 * half_field, bucket_width_);
-  const double max_radius = 0.5 * (stem_width_.enabled() ? stem_width_.maxWidth(params_.max_range) : params_.diameter);
+  double max_radius = 0.0;
+  for (size_t c = 0; c < class_widths_.size(); c++)
+  {
+    max_radius = std::max(max_radius, 0.5 * (class_widths_[c].enabled() ? class_widths_[c].maxWidth(params_.max_range) :
+                                                                          class_diameters_[c]));
+  }
   max_height_ = 0.0;
   for (size_t i = 0; i < stems_.size(); i++)
   {
@@ -449,6 +520,16 @@ void PneumatophoreGen::generate(const PneumatophoreParams &params, unsigned int 
   }
   std::cout << "generated " << stems_.size() << " stems and " << params_.num_rays - num_omitted << " rays, of which "
             << num_stem_hits << " hit stems and " << num_ground_hits << " hit the ground" << std::endl;
+  if (params_.diameter_distribution != PneumatophoreParams::DiameterDistribution::Fixed && !stems_.empty())
+  {
+    double sum = 0.0;
+    for (size_t s = 0; s < stems_.size(); s++)
+    {
+      sum += stemDiameter(s);
+    }
+    std::cout << "mean stem diameter " << sum / static_cast<double>(stems_.size()) << " m, in "
+              << class_diameters_.size() << " diameter classes" << std::endl;
+  }
 }
 
 void PneumatophoreGen::castRay(const Eigen::Vector3d &start, const Eigen::Vector3d &dir, double &length, bool &hit_stem,
@@ -529,7 +610,9 @@ void PneumatophoreGen::castRay(const Eigen::Vector3d &start, const Eigen::Vector
       const Eigen::Vector2d rel = Eigen::Vector2d(stem[0], stem[1]) - s2;
       const double along = h2 > 1e-12 ? rel.dot(d2) / h2 : 0.0;  // range of closest approach
       const double offset2 = std::max(0.0, rel.squaredNorm() - (h2 > 1e-12 ? along * along * h2 : 0.0));
-      const double radius = 0.5 * (stem_width_.enabled() ? stem_width_.width(std::max(0.0, along)) : params_.diameter);
+      const StemWidthModel &stem_width = class_widths_[static_cast<size_t>(stem_classes_[static_cast<size_t>(index)])];
+      const double diameter = stemDiameter(static_cast<size_t>(index));
+      const double radius = 0.5 * (stem_width.enabled() ? stem_width.width(std::max(0.0, along)) : diameter);
       if (offset2 >= radius * radius)
       {
         continue;
@@ -546,7 +629,7 @@ void PneumatophoreGen::castRay(const Eigen::Vector3d &start, const Eigen::Vector
         t_hit = t_in;
         if (!params_.footprint.range_to_outline && h > 1e-6)
         {
-          const double stem_radius = 0.5 * params_.diameter;
+          const double stem_radius = 0.5 * diameter;
           t_hit = std::max(t_in, along - std::sqrt(std::max(0.0, stem_radius * stem_radius - offset2)) / h);
           if (dir[2] > 0.0)
           {
@@ -622,8 +705,9 @@ bool PneumatophoreGen::writeTruthProfile(const std::string &file_name, double la
   const int num_layers = static_cast<int>(std::ceil(max_height_ / layer_width)) + 1;
   std::vector<double> frontal_area(static_cast<size_t>(num_layers), 0.0);
   int num_stems = 0;
-  for (const auto &stem : stems_)
+  for (size_t s = 0; s < stems_.size(); s++)
   {
+    const Eigen::Vector3d &stem = stems_[s];
     if (std::abs(stem[0]) >= half_plot || std::abs(stem[1]) >= half_plot)
     {
       continue;
@@ -632,7 +716,7 @@ bool PneumatophoreGen::writeTruthProfile(const std::string &file_name, double la
     for (int i = 0; i < num_layers; i++)
     {
       const double overlap = std::max(0.0, std::min(stem[2], layer_width * (i + 1)) - layer_width * i);
-      frontal_area[static_cast<size_t>(i)] += params_.diameter * overlap;
+      frontal_area[static_cast<size_t>(i)] += stemDiameter(s) * overlap;
     }
   }
   ofs << "z_min,z_max,true_frontal_area_per_volume_Nd" << std::endl;
@@ -670,11 +754,21 @@ bool PneumatophoreGen::writeStems(const std::string &file_name) const
     return false;
   }
   ofs << "x,y,height,diameter" << std::endl;
-  for (const auto &stem : stems_)
+  for (size_t s = 0; s < stems_.size(); s++)
   {
-    ofs << stem[0] << "," << stem[1] << "," << stem[2] << "," << params_.diameter << std::endl;
+    ofs << stems_[s][0] << "," << stems_[s][1] << "," << stems_[s][2] << "," << stemDiameter(s) << std::endl;
   }
   return true;
+}
+
+std::vector<double> PneumatophoreGen::stemDiameters() const
+{
+  std::vector<double> diameters(stems_.size());
+  for (size_t s = 0; s < stems_.size(); s++)
+  {
+    diameters[s] = stemDiameter(s);
+  }
+  return diameters;
 }
 
 bool PneumatophoreGen::writeTruthCells(const std::string &file_name, const Eigen::Vector3d &cell_size) const
@@ -690,8 +784,9 @@ bool PneumatophoreGen::writeTruthCells(const std::string &file_name, const Eigen
   const int ny = static_cast<int>(std::floor(params_.plot_width / cell_size[1] + 1e-9));
   const int nz = static_cast<int>(std::ceil(max_height_ / cell_size[2]));
   std::vector<double> frontal_area(static_cast<size_t>(nx * ny * nz), 0.0);
-  for (const auto &stem : stems_)
+  for (size_t s = 0; s < stems_.size(); s++)
   {
+    const Eigen::Vector3d &stem = stems_[s];
     const int x = static_cast<int>(std::floor((stem[0] + half_plot) / cell_size[0]));
     const int y = static_cast<int>(std::floor((stem[1] + half_plot) / cell_size[1]));
     if (x < 0 || y < 0 || x >= nx || y >= ny)
@@ -702,7 +797,7 @@ bool PneumatophoreGen::writeTruthCells(const std::string &file_name, const Eigen
     {
       const double overlap =
         std::max(0.0, std::min(stem[2], cell_size[2] * (z + 1)) - cell_size[2] * static_cast<double>(z));
-      frontal_area[static_cast<size_t>(x + nx * (y + ny * z))] += params_.diameter * overlap;
+      frontal_area[static_cast<size_t>(x + nx * (y + ny * z))] += stemDiameter(s) * overlap;
     }
   }
   const double volume = cell_size[0] * cell_size[1] * cell_size[2];

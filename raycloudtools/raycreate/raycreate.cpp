@@ -33,6 +33,10 @@ void usage(int exit_code = 1)
   std::cout << "                           and pneumatophores_stems.csv, the stem positions and heights" << std::endl;
   std::cout << "             --stems_per_m2 100     - mean stem density" << std::endl;
   std::cout << "             --diameter 0.01        - stem diameter (m)" << std::endl;
+  std::cout << "             --diameter_sd 0.003    - log-normal stem diameters, of mean --diameter and this standard" << std::endl;
+  std::cout << "                                      deviation (m). Default: all stems of one diameter" << std::endl;
+  std::cout << "             --diameter_mixture 0.006,0.014,0.5 - stems of two diameters (m), with this fraction of" << std::endl;
+  std::cout << "                                      them of the second. Instead of --diameter" << std::endl;
   std::cout << "             --clustered            - stems along cable roots radiating from trees, else random" << std::endl;
   std::cout << "             --cluster_spread 0.03  - standard deviation of stem distance from the cable roots (m)" << std::endl;
   std::cout << "             --patchy 0.5,0.3,0     - stems only in random circular patches (e.g. degraded areas), given" << std::endl;
@@ -83,6 +87,8 @@ int rayCreate(int argc, char *argv[])
   ray::Vector2dArgument zenith(0.0, 180.0), trunks(0.0, 100.0);
   ray::Vector2dArgument height(0.0, 100.0), uniform_height(0.0, 100.0), pose_noise(0.0, 100.0);
   ray::DoubleArgument scanner_height(0.01, 1000.0, 1.2), plot_width(0.1, 10000.0, 6.0), range_noise(0.0, 10.0);
+  ray::DoubleArgument diameter_sd(0.0, 1.0);
+  ray::Vector3dArgument diameter_mixture(0.0, 1.0);
   ray::KeyChoice return_range({ "surface", "outline" });
   ray::OptionalKeyValueArgument stems_option("stems_per_m2", 's', &stems_per_m2);
   ray::OptionalKeyValueArgument diameter_option("diameter", 'd', &diameter);
@@ -102,6 +108,8 @@ int rayCreate(int argc, char *argv[])
   ray::OptionalKeyValueArgument plot_width_option("plot_width", 'l', &plot_width);
   ray::OptionalKeyValueArgument range_noise_option("range_noise", 'x', &range_noise);
   ray::OptionalKeyValueArgument pose_noise_option("pose_noise", 'j', &pose_noise);
+  ray::OptionalKeyValueArgument diameter_sd_option("diameter_sd", 'q', &diameter_sd);
+  ray::OptionalKeyValueArgument diameter_mixture_option("diameter_mixture", 'y', &diameter_mixture);
   ray::OptionalFlagArgument clustered_flag("clustered", 'c'), ground_flag("ground_returns", 'g'),
     overlapping_flag("overlapping", 'o');
   bool from_seed = ray::parseCommandLine(argc, argv, { &cloud_type, &seed }, { &view_flag });
@@ -112,7 +120,8 @@ int rayCreate(int argc, char *argv[])
     { &view_flag, &stems_option, &diameter_option, &rays_option, &footprint_option, &clustered_flag, &ground_flag,
       &spread_option, &patchy_option, &walk_option, &zenith_option, &truth_cells_option, &overlapping_flag,
       &min_gap_option, &trunks_option, &return_range_option, &height_option, &uniform_height_option,
-      &scanner_height_option, &plot_width_option, &range_noise_option, &pose_noise_option });
+      &scanner_height_option, &plot_width_option, &range_noise_option, &pose_noise_option, &diameter_sd_option,
+      &diameter_mixture_option });
   if (!from_seed && !from_file && !pneumatophores)
     usage();
 
@@ -313,6 +322,28 @@ int rayCreate(int argc, char *argv[])
     ray::PneumatophoreParams params;
     params.stems_per_m2 = stems_per_m2.value();
     params.diameter = diameter.value();
+    if (diameter_mixture_option.isSet() && (diameter_option.isSet() || diameter_sd_option.isSet()))
+    {
+      std::cerr << "Error: --diameter_mixture is an alternative to --diameter and --diameter_sd" << std::endl;
+      return 1;
+    }
+    if (diameter_sd_option.isSet() && diameter_sd.value() > 0.0)
+    {
+      params.diameter_distribution = ray::PneumatophoreParams::DiameterDistribution::LogNormal;
+      params.diameter_sd = diameter_sd.value();
+    }
+    if (diameter_mixture_option.isSet())
+    {
+      if (diameter_mixture.value()[0] < 0.0001 || diameter_mixture.value()[1] < 0.0001)
+      {
+        std::cerr << "Error: --diameter_mixture diameters must be at least 0.0001 m" << std::endl;
+        return 1;
+      }
+      params.diameter_distribution = ray::PneumatophoreParams::DiameterDistribution::Mixture;
+      params.diameter = diameter_mixture.value()[0];
+      params.mixture_diameter = diameter_mixture.value()[1];
+      params.mixture_fraction = diameter_mixture.value()[2];
+    }
     params.num_rays = num_rays.value();
     params.clustered = clustered_flag.isSet();
     params.lateral_spread = spread.value();

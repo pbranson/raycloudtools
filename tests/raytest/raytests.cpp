@@ -1225,6 +1225,138 @@ TEST(Basic, RayDensityPneumatophoreOptions)
   EXPECT_LT(offset_sd, 0.025);
 }
 
+/// The pneumatophore generator's stem diameter distributions: a two-diameter mixture and log-normal diameters, which
+/// don't overlap, and whose truth uses each stem's own diameter (N d is the sum of the diameters per unit area)
+TEST(Basic, RayDensityPneumatophoreDiameters)
+{
+  ray::PneumatophoreParams params;
+  params.plot_width = 1.0;
+  params.margin = 0.5;
+  params.num_rays = 20000;
+  params.stems_per_m2 = 1000.0;
+  ray::PneumatophoreGen gen;
+  gen.generate(params, 4);
+  for (const double d : gen.stemDiameters())
+  {
+    EXPECT_EQ(d, 0.01);  // one diameter by default
+  }
+  // the sum of the diameters of the stems in the plot, per unit area, and the stems' mean and standard deviation
+  auto summary = [&](double &nd, double &mean, double &sd) {
+    const std::vector<double> diameters = gen.stemDiameters();
+    double sum = 0.0, sum2 = 0.0, plot_sum = 0.0;
+    for (size_t i = 0; i < diameters.size(); i++)
+    {
+      sum += diameters[i];
+      sum2 += diameters[i] * diameters[i];
+      const Eigen::Vector3d &stem = gen.stems()[i];
+      if (std::abs(stem[0]) < 0.5 * params.plot_width && std::abs(stem[1]) < 0.5 * params.plot_width)
+      {
+        plot_sum += diameters[i];
+      }
+    }
+    const double n = static_cast<double>(diameters.size());
+    nd = plot_sum / (params.plot_width * params.plot_width);
+    mean = sum / n;
+    sd = std::sqrt(std::max(0.0, sum2 / n - mean * mean));
+  };
+  // non-overlapping stems: centres at least the mean of the two diameters apart
+  auto check_no_overlap = [&]() {
+    const std::vector<double> diameters = gen.stemDiameters();
+    for (size_t i = 0; i < diameters.size(); i++)
+    {
+      const Eigen::Vector3d &a = gen.stems()[i];
+      if (std::abs(a[0]) >= 0.25 || std::abs(a[1]) >= 0.25)
+      {
+        continue;
+      }
+      for (size_t j = 0; j < diameters.size(); j++)
+      {
+        if (j != i)
+        {
+          const double distance = (gen.stems()[j].head<2>() - a.head<2>()).norm();
+          ASSERT_GE(distance, 0.5 * (diameters[i] + diameters[j]) - 1e-12);
+        }
+      }
+    }
+  };
+  // the truth profile's lowest layer (below every stem top) is N d
+  auto truth_bottom = [&]() {
+    EXPECT_TRUE(gen.writeTruthProfile("pneumatophore_diameters_truth.csv", 0.01));
+    std::ifstream ifs("pneumatophore_diameters_truth.csv");
+    std::string line;
+    std::getline(ifs, line);
+    std::getline(ifs, line);
+    return std::stod(line.substr(line.rfind(',') + 1));
+  };
+
+  params.diameter_distribution = ray::PneumatophoreParams::DiameterDistribution::Mixture;
+  params.diameter = 0.006;
+  params.mixture_diameter = 0.014;
+  params.mixture_fraction = 0.25;
+  gen.generate(params, 4);
+  int num_large = 0;
+  for (const double d : gen.stemDiameters())
+  {
+    EXPECT_TRUE(d == 0.006 || d == 0.014);
+    num_large += d == 0.014 ? 1 : 0;
+  }
+  EXPECT_NEAR(static_cast<double>(num_large) / static_cast<double>(gen.stems().size()), 0.25, 0.02);
+  double nd, mean, sd;
+  summary(nd, mean, sd);
+  EXPECT_NEAR(mean, 0.008, 0.0002);
+  EXPECT_NEAR(truth_bottom(), nd, 1e-6 * nd);
+  check_no_overlap();
+
+  params.diameter_distribution = ray::PneumatophoreParams::DiameterDistribution::LogNormal;
+  params.diameter = 0.01;
+  params.diameter_sd = 0.003;
+  gen.generate(params, 4);
+  summary(nd, mean, sd);
+  EXPECT_NEAR(mean, 0.01, 0.0002);
+  EXPECT_NEAR(sd, 0.003, 0.0002);
+  EXPECT_NEAR(truth_bottom(), nd, 1e-6 * nd);
+  check_no_overlap();
+
+  // wider stems intercept more rays: rays hit the 1.4 cm stems more often, per stem, than the 0.6 cm stems
+  params.diameter_distribution = ray::PneumatophoreParams::DiameterDistribution::Mixture;
+  params.diameter = 0.006;
+  params.mixture_fraction = 0.5;
+  params.stems_per_m2 = 100.0;
+  params.num_rays = 200000;
+  gen.generate(params, 6);
+  const std::vector<double> diameters = gen.stemDiameters();
+  int hits[2] = { 0, 0 }, counts[2] = { 0, 0 };
+  for (const double d : diameters)
+  {
+    counts[d == 0.014 ? 1 : 0]++;
+  }
+  for (size_t i = 0; i < gen.cloud().rayCount(); i++)
+  {
+    if (gen.cloud().colours[i].green != 160)
+    {
+      continue;  // not a stem return
+    }
+    // the stem whose surface is nearest the return
+    const Eigen::Vector3d &end = gen.cloud().ends[i];
+    double best = 1e10;
+    int best_class = 0;
+    for (size_t s = 0; s < diameters.size(); s++)
+    {
+      const double gap = std::abs((gen.stems()[s].head<2>() - end.head<2>()).norm() - 0.5 * diameters[s]);
+      if (gap < best)
+      {
+        best = gap;
+        best_class = diameters[s] == 0.014 ? 1 : 0;
+      }
+    }
+    hits[best_class]++;
+  }
+  ASSERT_GT(hits[0], 100);
+  const double ratio = (static_cast<double>(hits[1]) / counts[1]) / (static_cast<double>(hits[0]) / counts[0]);
+  EXPECT_GT(ratio, 1.8);  // about 14 / 6 = 2.3 for thin beams, less shadowing aside
+  EXPECT_LT(ratio, 2.8);
+}
+
 /// The mean exit distance of a rectangle, and the self-shadow correction of the pooled estimator: it lowers the mean
 /// of the voxel densities by about 1 + s d_eff / W^2 (towards the truth), and leaves the pooled cell density unchanged
 TEST(Basic, RayDensitySelfShadow)
