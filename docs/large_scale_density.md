@@ -56,7 +56,7 @@ ground model  ->  ray binning into tiles (+ halo)  ->  per-tile density (paralle
   single global run, so the result is identical to float rounding: tiles have no seams and need no blending.
 * The pooled neighbourhood is (2k+1) x (2k+1) voxels with k = round(pool_radius / w), i.e. +-(k + 1/2) w: +-0.075 m
   for the default pool_radius 0.05 at 5 cm voxels. A wider window (0.1: +-0.125 m, halo 0.2 m) reduces the
-  self-shadowing bias of `density` (about +0.47 d_eff / window width: +6-8% at the default, +2-4% with 0.1, for 1 cm
+  self-shadowing bias of `density` (about +$`0.47\,d_\mathrm{eff}`$ / window width: +6-8% at the default, +2-4% with 0.1, for 1 cm
   stems), but reads lower where stems are patchy or clustered at a smaller scale (cable roots: 0.87 with the default,
   0.77 with 0.1). `--self_shadow_correction` removes the self-shadowing bias for uniform stands, but is off by
   default, as it makes patches and cable roots read low (report, sections 8.1 and 10). It needs `--stem_diameter`
@@ -109,7 +109,7 @@ pass through them and are biased high.
 * Don't flatten the cloud with `raytranslate subtract ground_mesh.ply`: it shifts each **whole ray** by the ground
   height at its end point, so the rest of the ray is misplaced vertically by the slope times its horizontal distance
   from its end. Hand-held rays cross several metres of the stem layer, so on a 10% slope this put the rays' paths
-  tens of centimetres out, and gave 0.43-0.71 of the flat-ground N d in simulation (only this slope has been
+  tens of centimetres out, and gave 0.43-0.71 of the flat-ground $`N d`$ in simulation (only this slope has been
   tested).
 * Instead (as implemented), keep absolute heights in the voxel grid (each tile covers its local relief), and assign
   each voxel to a height-above-ground layer by the height of its centre above the ground beneath the column's centre
@@ -151,12 +151,12 @@ mesh triangles overlapping the tile and its halo are used, so one mesh for the w
   without writing, so a store can't mix parameters. Each tile also writes `tiles/i_j.json` (its command line, input
   and halo), which Zarr readers ignore.
 * Variables (as implemented), on dimensions (z, y, x) for 1 x 1 x 0.1 m cells (300 x 300 x 6 per variable, small):
-  `density` (N d, the mean of the observed voxel densities: the main output, which reads high by the self-shadowing
+  `density` ($`N d`$, the mean of the observed voxel densities: the main output, which reads high by the self-shadowing
   bias of the report's section 8.1 unless `--self_shadow_correction` is given), `pooled_density` (total corrected
   hits over total weighted path of the observed voxels, i.e. the path-weighted mean of the voxel densities: within 3% for stems uniform within the cell, but about
   half the truth where stems are patchy within the cell, and low where the density falls with height),
   `patchiness_ratio` (density / pooled_density: 1.03-1.09 for random stems in the lowest 0.2 m, 1.6-2.4 for patches
-  and cable roots), `solid_fraction` (N pi d^2 / 4 from `density`), `hits`, `weighted_path` and `observed_fraction`
+  and cable roots), `solid_fraction` ($`N \pi d^2 / 4`$ from `density`), `hits`, `weighted_path` and `observed_fraction`
   (the fraction of the cell's voxels with more than 2 rays after the neighbour top-up, or without it with
   `--no_neighbour_priors`, and with `--hybrid` that of the default-window estimate; cells below 0.9 read low) and,
   with `--hybrid`, `hybrid_weight` (the fraction of the cell's observed voxels taking the single-voxel estimate: 0
@@ -164,7 +164,7 @@ mesh triangles overlapping the tile and its halo are used, so one mesh for the w
   `observed_fraction` 0), plus coordinates `x`,
   `y`, `z` (cell centres, float64, so that georeferenced coordinates are exact). With `--voxels`, also
   `voxel_density` on (zv, yv, xv) as heights above ground (6000 x 6000 x 12 float32, 1.7 GB, for 3D inspection). Not
-  yet output: the mean d_eff / d, and a flag for cells at the solid fraction limit.
+  yet output: the mean $`d_\mathrm{eff}/d`$, and a flag for cells at the solid fraction limit.
 * Attributes (`.zattrs` of the group): title, quantity, density_model, origin, tile_width, num_tiles,
   voxel_width, cell_size, height_range, heights_above_ground, voxels, stem_diameter, footprint, return_range,
   estimator, pool_radius, min_gap_ratio, min_sin_zenith, max_sin_zenith, occlusion_correction and
