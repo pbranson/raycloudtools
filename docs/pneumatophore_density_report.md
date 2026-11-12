@@ -364,7 +364,7 @@ otherwise the voxel count per cell varies with the ground height, and isn't stor
 
 `raycreate pneumatophores <seed>` (`raylib/raypneumatophoregen.cpp`) generates vertical cylinders, by default of one
 diameter (1 cm, `--diameter`; `--diameter_sd sd` gives log-normal diameters of that mean, and `--diameter_mixture
-d1,d2,f` two diameters with a fraction f of the second), on flat ground at z = 0, and scans them with a hand-held
+d1,d2,f` two diameters with a fraction $`f`$ of the second), on flat ground at $`z = 0`$, and scans them with a hand-held
 lidar walked along a lawnmower path. The defaults, used for every result unless stated, are:
 
 * Heights: normal, mean 0.25 m and s.d. 0.08 m (`--height mean,sd`; heights below 2 cm are redrawn; 3%, 24%, 47%
@@ -378,13 +378,13 @@ lidar walked along a lawnmower path. The defaults, used for every result unless 
   (`--scanner_height`) walking lines 1 m apart (`--walk_spacing`), 2 000 000 rays (`--rays`; about 56 000 per m² of
   plot) uniform over zenith angles 0–101.5° (`--zenith`), 30 m range for rays with no return; ground returns are
   given zero alpha (perfectly classified; `--ground_returns` keeps them as returns).
-* Beam: Gaussian, 10 mm exit diameter, 3 mrad divergence, τ = 0.05, `surface` return range (`--footprint`,
+* Beam: Gaussian, 10 mm exit diameter, 3 mrad divergence, $`\tau = 0.05`$, `surface` return range (`--footprint`,
   `--return_range`); stem tops are solid discs of the widened outline. No intensity.
 * Measurement errors: none by default. `--range_noise sd` adds normal noise to the range of each return;
   `--pose_noise sd,interval` offsets each ray by a smooth trajectory error, independent normal values per axis every
   `interval` metres of walk, interpolated linearly. They use their own random sequence, so the stems and the ideal
   rays are those of the noise-free scene.
-* Truth: N d in each 1 × 1 × 0.1 m cell (`--truth_cells`) and each 1 cm layer, from the stems' positions and
+* Truth: $`N d`$ in each 1 × 1 × 0.1 m cell (`--truth_cells`) and each 1 cm layer, from the stems' positions and
   heights.
 
 Scenes depend only on the seed and options, on any platform.
@@ -421,7 +421,7 @@ noise. The cell RMSE of `density` was 5–8% in the lowest 0.1 m and 8–9% at 0
 **Table 2.** Random stems over a wider range of densities, and the other estimators, 4 scenes each (seeds 101–104),
 lowest 0.1 m (0.1–0.2 m in brackets for `density` and `pooled_density`).
 
-| Stems/m² | Observed fraction | `density` | `pooled_density` | Uncorrected `density` | `crossing` | `beer_lambert` (uncorrected) | Mean ρ |
+| Stems/m² | Observed fraction | `density` | `pooled_density` | Uncorrected `density` | `crossing` | `beer_lambert` (uncorrected) | Mean $`\rho`$ |
 |---|---|---|---|---|---|---|---|
 | 30 | 1.00 | 1.080 (1.089) | 0.987 (0.999) | 1.093 | 1.055 | 1.299 | 2.42 |
 | 100 | 1.00 | 1.075 (1.087) | 0.984 (0.996) | 1.101 | 1.032 | 1.299 | 2.35 |
@@ -479,27 +479,27 @@ and 1.062 at 0–0.1 m and 1.073, 1.072 and 1.073 at 0.1–0.2 m: more scanning 
 
 ### 7.5 Sensitivity to the beam threshold and the stem diameter
 
-**Table 4.** Scenes generated with τ = 0.05, estimated assuming τ (4 scenes, `density`, lowest 0.1 m).
+**Table 4.** Scenes generated with $`\tau = 0.05`$, estimated assuming $`\tau`$ (4 scenes, `density`, lowest 0.1 m).
 
-| Stems/m² | Assume τ = 0.02 | τ = 0.05 (true) | τ = 0.15 |
+| Stems/m² | Assume $`\tau = 0.02`$ | $`\tau = 0.05`$ (true) | $`\tau = 0.15`$ |
 |---|---|---|---|
 | 100 | 0.943 (−12%) | 1.075 | 1.358 (+26%) |
 | 300 | 0.939 (−12%) | 1.063 | 1.325 (+25%) |
 | 1000 | 0.929 (−11%) | 1.039 | 1.265 (+22%) |
 
-Relative changes are against the true-τ estimate; at 0.1–0.2 m and for `pooled_density` they are similar (up to
+Relative changes are against the true-$`\tau`$ estimate; at 0.1–0.2 m and for `pooled_density` they are similar (up to
 +27%).
 
 **Table 5.** Scenes of 1 cm stems estimated assuming another diameter (one scene, seed 101, `density`, lowest
 0.1 m).
 
-| Stems/m² | Assume d = 0.8 cm | d = 1 cm (true) | d = 1.2 cm |
+| Stems/m² | Assume $`d = 0.8`$ cm | $`d = 1`$ cm (true) | $`d = 1.2`$ cm |
 |---|---|---|---|
 | 300 | 0.941 (−11%) | 1.056 | 1.147 (+9%) |
 | 1000 | 0.954 (−8%) | 1.038 | 1.094 (+5%) |
 
 The effect is smaller at high density, because the occlusion correction partly compensates. In the footprint model
-alone, d_eff/d for an assumed 0.8 or 1.2 cm changes by −11% / +9% at 1 m range and −14% / +12% at 5 m relative to
+alone, $`d_\mathrm{eff}/d`$ for an assumed 0.8 or 1.2 cm changes by −11% / +9% at 1 m range and −14% / +12% at 5 m relative to
 1 cm. The validation matrix (Section 7.9, block D) repeated this over 4 seeds, for 0.5, 1 and 2 cm stems and
 assumed diameters of 0.7–1.3 times the true one (Section 9.3 gives the required accuracy), and generated diameter
 distributions: with ss, log-normal diameters of 10 ± 3 mm read 1.004 / 1.017 (0–0.1 / 0.1–0.2 m), and an equal
@@ -509,10 +509,10 @@ right mean adds up to about 1%, but the mean must be right.
 
 ### 7.6 Sensitivity to the minimum gap, the return convention, the voxel size and the beam
 
-**Table 6.** Scenes with a minimum gap g between stems, estimated assuming g = 0 or the true g (4 scenes,
+**Table 6.** Scenes with a minimum gap $`g`$ between stems, estimated assuming $`g = 0`$ or the true $`g`$ (4 scenes,
 `density`, lowest 0.1 m).
 
-| Stems/m² | g = 0.5, assume 0 | assume 0.5 | g = 1, assume 0 | assume 1 |
+| Stems/m² | $`g = 0.5`$, assume 0 | assume 0.5 | $`g = 1`$, assume 0 | assume 1 |
 |---|---|---|---|---|
 | 100 | 1.089 | 1.069 | 1.101 | 1.059 |
 | 300 | 1.107 | 1.059 | 1.148 | 1.048 |
@@ -523,7 +523,7 @@ correction, and the difference grows with height (Section 8.2): 1–2% at 0–0.
 e.g. `density` 1.063 → 1.078 at 300 and 1.039 → 1.057 at 1000 stems/m²), and 5–10% at 0.2–0.5 m (one scene).
 Estimating with the other convention changed the estimates by at most 0.2%.
 
-**Table 7.** Voxel size (random stems, 4 scenes, default pool radius 0.05 m, so windows of W = 0.125, 0.15 and
+**Table 7.** Voxel size (random stems, 4 scenes, default pool radius 0.05 m, so windows of $`W = 0.125`$, 0.15 and
 0.30 m; `density` and, in brackets, `pooled_density`).
 
 | Stems/m² | Voxel | Observed fraction 0–0.1 m | 0–0.1 m | 0.1–0.2 m |
@@ -563,7 +563,7 @@ Only this slope has been tested.
 ### 7.8 Trunks and their separability
 
 Scenario: 300 stems/m² with trunks at 0.1 per m² (mean diameter 0.2 m), so a cell holding a trunk has 0.18–0.25 m⁻¹
-of trunk frontal area, about 6–8% of its pneumatophore N d. 1 × 1 m cells, 4 scenes (2–5 trunks in each plot),
+of trunk frontal area, about 6–8% of its pneumatophore $`N d`$. 1 × 1 m cells, 4 scenes (2–5 trunks in each plot),
 `density` / pneumatophore truth (s.d. 0.2–3% in trunk cells, under 1% elsewhere):
 
 | | Cells with a trunk, 0–0.1 / 0.1–0.2 / 0.2–0.3 m | Cells without |
@@ -609,8 +609,8 @@ reference scene, and asks whether `density` meets a ±2% criterion with and with
 | Block | Factor | Levels | Stems/m² | Configurations |
 |---|---|---|---|---|
 | A | Scan geometry | walk lines 0.5, 1, 2, 3 m apart; scanner at 0.8, 1.2, 2 m; zenith bands 0–101.5°, 30–90°, 60–95°; an 8 m plot; a single walk line across an 8 m plot | 300, 1000 (100 for the single line) | 20 |
-| B | Range noise | σ = 0, 0.5, 1, 2, 3 cm, with `surface` and `outline` returns (estimator matched) | 300, 1000 | 20 |
-| C | Pose noise | σ = 1, 2, 5 cm with knots every 0.5 or 2 m, and none | 300 | 7 |
+| B | Range noise | $`\sigma`$ = 0, 0.5, 1, 2, 3 cm, with `surface` and `outline` returns (estimator matched) | 300, 1000 | 20 |
+| C | Pose noise | $`\sigma`$ = 1, 2, 5 cm with knots every 0.5 or 2 m, and none | 300 | 7 |
 | D | Diameter | true 0.5, 1, 2 cm, assumed 0.7–1.3 times it (pass tested at 1.0 only); a 6/14 mm mixture and log-normal 10 ± 3 mm, assumed 10 mm | 300, 1000 | 8 |
 | E | Stem heights | normal 0.25 ± 0.08 and 0.4 ± 0.15 m; uniform 0.05–0.5 m (reported only); one height 0.6 m; 2 m (no tops in view) | 300, 1000 | 10 |
 | F | Low observation (reported only) | stems of 0.25 ± 0.08 m or one height 0.6 m, lines 1 or 2 m apart | 600, 1000, 1500 | 12 |
@@ -687,7 +687,7 @@ The diagnoses (block X and the layers above 0.2 m):
   (0.997 / 1.000) and left 0.981–0.994 at 0.2–0.5 m. It acts where stems end, smearing the tops and the hits near
   them vertically, and 2 cm or less was harmless.
 * **Overlapping stems.** The occlusion correction assumes stems that don't overlap (Section 5). Multiplying the Poisson
-  results by the response at their density, R = 1.046 at 300 and 1.157 at 1000 stems/m², gives 1.013 and 1.011 at
+  results by the response at their density, $`R = 1.046`$ at 300 and 1.157 at 1000 stems/m², gives 1.013 and 1.011 at
   0–0.1 m, so most of the deficit is that model mismatch, not the self-shadow correction. Real stems don't overlap.
 * **Diameter mixture.** An equal mixture of 6 and 14 mm stems, estimated with the 10 mm mean, read 0.7–1.3% higher
   than stems of one diameter, also with stems of one height (1.020 / 1.017), so it is a property of the mixture:
@@ -721,18 +721,18 @@ the 0.9 threshold of Section 8.3 over the wider range of scans.
 ### 7.10 Beam footprint mismatch (block L)
 
 Every scene so far was estimated with the footprint it was generated with. Block L of the validation matrix
-generates scenes with a "true" beam and estimates them assuming another, to find how accurately w₀, γ and τ must
+generates scenes with a "true" beam and estimates them assuming another, to find how accurately $`w_0`$, $`\gamma`$ and $`\tau`$ must
 be known and how to calibrate them (Section 9.2).
 
-**Design.** Three true beams: default (10 mm, 3 mrad, τ = 0.05), narrow (5 mm, 0.5 mrad, 0.05) and wide (20 mm,
+**Design.** Three true beams: default (10 mm, 3 mrad, $`\tau = 0.05`$), narrow (5 mm, 0.5 mrad, 0.05) and wide (20 mm,
 5 mrad, 0.05), at 300 and 1000 stems/m² (reference scene of Section 7.9 otherwise, 4 seeds). Each scene was
 estimated with the base (default), ss and sw estimators, assuming:
 
 * the exit diameter or the divergence at 0.5, 0.75, 1.25, 1.5 and 2 times the true value (e0.5 … e2, g0.5 … g2);
 * thresholds of 0.02, 0.03, 0.08, 0.1 and 0.15 (t0.02 … t0.15);
-* joint errors that give the right beam diameter or d_eff at 2 m but not at other ranges: twice the divergence with
+* joint errors that give the right beam diameter or $`d_\mathrm{eff}`$ at 2 m but not at other ranges: twice the divergence with
   a smaller exit (j_steep), no divergence with a larger exit (j_flat), and the exit at 0.5, 1.5 and 2 times with
-  the threshold that restores d_eff at 2 m (jt_e0.5, jt_e1.5, jt_e2);
+  the threshold that restores $`d_\mathrm{eff}`$ at 2 m (jt_e0.5, jt_e1.5, jt_e2);
 * no footprint correction (nofp);
 * for the default beam, an assumed diameter of 0.8–1.2 times the true 1 cm crossed with the thresholds 0.02–0.15.
 
@@ -740,11 +740,11 @@ A further scene has one walk line along the middle of an 8 m plot (default beam,
 cells' distance from the line, to see the range dependence. The metric is d/t90 (Section 7.9) and, for the
 sensitivities, the ratio r90 of each estimate to the same estimator with the true footprint, paired by seed.
 
-**Table 15.** d/t90 at 0–0.1 m by assumed footprint, and the ratio Q of the assumed to the true path-weighted mean
-d_eff over the same cells (default beam, 300 stems/m²). The joint rows of the narrow and wide beams are their own
+**Table 15.** d/t90 at 0–0.1 m by assumed footprint, and the ratio $`Q`$ of the assumed to the true path-weighted mean
+$`d_\mathrm{eff}`$ over the same cells (default beam, 300 stems/m²). The joint rows of the narrow and wide beams are their own
 2 m matches (e.g. j_steep is 4 mm, 1 mrad for the narrow beam and 10 mm, 10 mrad for the wide one). s.e. ≤ 0.005.
 
-| Assumed | Default beam: Q | base | ss | sw | ss, 1000/m² | ss, narrow beam | ss, wide beam |
+| Assumed | Default beam: $`Q`$ | base | ss | sw | ss, 1000/m² | ss, narrow beam | ss, wide beam |
 |---|---|---|---|---|---|---|---|
 | true | 1.000 | 1.067 | 1.001 | 0.999 | 0.985 | 0.998 | 1.003 |
 | e0.5 | 0.814 | 1.302 | 1.236 | 1.276 | 1.207 | 1.162 | 1.352 |
@@ -764,44 +764,45 @@ d_eff over the same cells (default beam, 300 stems/m²). The joint rows of the n
 | t0.15 | 0.797 | 1.329 | 1.262 | 1.306 | 1.214 | 1.138 | 1.380 |
 | j_steep (4 mm, 6 mrad) | 0.953 | 1.119 | 1.052 | 1.060 | 1.070 | 1.006 | 1.079 |
 | j_flat (16 mm, 0 mrad) | 1.047 | 1.020 | 0.954 | 0.943 | 0.913 | 0.991 | 0.938 |
-| jt_e0.5 (5 mm, τ 0.0084) | 0.979 | 1.090 | 1.024 | 1.026 | 1.022 | 1.004 | 1.043 |
-| jt_e1.5 (15 mm, τ 0.104) | 1.012 | 1.055 | 0.989 | 0.984 | 0.966 | 0.996 | 0.980 |
-| jt_e2 (20 mm, τ 0.150) | 1.020 | 1.046 | 0.980 | 0.974 | 0.952 | 0.995 | 0.962 |
+| jt_e0.5 (5 mm, $`\tau`$ 0.0084) | 0.979 | 1.090 | 1.024 | 1.026 | 1.022 | 1.004 | 1.043 |
+| jt_e1.5 (15 mm, $`\tau`$ 0.104) | 1.012 | 1.055 | 0.989 | 0.984 | 0.966 | 0.996 | 0.980 |
+| jt_e2 (20 mm, $`\tau`$ 0.150) | 1.020 | 1.046 | 0.980 | 0.974 | 0.952 | 0.995 | 0.962 |
 | no footprint | 0.452 | 2.302 | 2.237 | 2.457 | 2.034 | 1.491 | 3.275 |
 
-**Sensitivities.** As d ln(density) / d ln(parameter), with ss, the default beam at 300 stems/m² and 0–0.1 m
+**Sensitivities.** As $`\mathrm{d}\ln(\mathrm{density}) / \mathrm{d}\ln(\mathrm{parameter})`$, with ss, the default beam at 300 stems/m² and 0–0.1 m
 (local values from the ×0.75 / ×1.25 levels and the thresholds 0.03 / 0.08; least-squares fits over all levels
 agree within 0.02):
 
 | Parameter | Default beam | Narrow beam | Wide beam |
 |---|---|---|---|
-| Exit diameter w₀ | −0.38 | −0.28 | −0.51 |
-| Divergence γ | −0.18 | −0.05 | −0.18 |
-| Threshold τ | +0.17 | +0.10 | +0.22 |
-| Stem diameter d (assumed) | +0.46 | | |
+| Exit diameter $`w_0`$ | −0.38 | −0.28 | −0.51 |
+| Divergence $`\gamma`$ | −0.18 | −0.05 | −0.18 |
+| Threshold $`\tau`$ | +0.17 | +0.10 | +0.22 |
+| Stem diameter $`d`$ (assumed) | +0.46 | | |
 
-sw is about 1.2 times as sensitive (w₀ −0.44, γ −0.21, τ +0.20) and the base estimator about 0.94 times. The
+sw is about 1.2 times as sensitive ($`w_0`$ −0.44, $`\gamma`$ −0.21, $`\tau`$ +0.20) and the base estimator about 0.94 times. The
 response is not symmetric: relative to the true-footprint estimate, e0.75 / e1.25 gave +10.6% / −8.8%, and t0.03 /
 t0.08 −7.5% / +9.0%. The ranges of each parameter alone that keep the density within ±2% and ±5% are in
 Section 9.2 (Table 18).
 
-**One curve: the mean effective width.** Whatever combination of w₀, γ and τ is wrong, the density error follows
-the error Q in the path-weighted mean d_eff (equivalently ρ̄) at the ranges actually scanned. Fitting ln r90 =
-b₁ ln Q + b₂ (ln Q)² to all the single-parameter errors of each true beam, density, estimator and layer gave b₁ of
+**One curve: the mean effective width.** Whatever combination of $`w_0`$, $`\gamma`$ and $`\tau`$ is wrong, the density error follows
+the error $`Q`$ in the path-weighted mean $`d_\mathrm{eff}`$ (equivalently $`\bar\rho`$) at the ranges actually scanned.
+Fitting $`\ln r_{90} = b_1 \ln Q + b_2 (\ln Q)^2`$ to all the single-parameter errors of each true beam, density, estimator and layer gave $`b_1`$ of
 −0.96 to −1.05 for ss, −1.10 to −1.31 for sw and −0.87 to −0.98 for base, with RMS residuals of 0.01–0.15%. The
 joint errors, not used in the fit, fall on the same curves within 0.74% (ss, default beam: within 0.23%; e.g.
-j_flat at 1000 stems/m², Q 1.082, r90 0.927 against 0.927 predicted). So, to a good approximation,
+j_flat at 1000 stems/m², $`Q`$ 1.082, r90 0.927 against 0.927 predicted). So, to a good approximation,
 
-$$\frac{\Delta a}{a} \approx -1.0\,\frac{\Delta \bar d_\mathrm{eff}}{\bar d_\mathrm{eff}}\ \ (\text{ss}), \qquad
--1.2\times\ (\text{sw}), \qquad -0.95\times\ (\text{base}), \tag{15}$$
+```math
+\frac{\Delta a}{a} \approx -1.0\,\frac{\Delta \bar d_\mathrm{eff}}{\bar d_\mathrm{eff}}\ \ (\text{ss}), \qquad -1.2\times\ (\text{sw}), \qquad -0.95\times\ (\text{base}), \qquad (15)
+```
 
-and a beam calibration needs to fix only the mean d_eff / d over the survey's ranges, not each parameter. The
+and a beam calibration needs to fix only the mean $`d_\mathrm{eff} / d`$ over the survey's ranges, not each parameter. The
 exception is the stem diameter: an assumed diameter also enters the occlusion and self-shadow terms, so the
 diameter × threshold grid lies off the curve by up to 2.4–4.2% with ss (1.1–3.3% base, 7.6–9.1% sw).
 
 **Diameter × threshold.** A wrong threshold can absorb a wrong diameter. With ss at 300 stems/m² (0–0.1 m):
 
-| Assumed d / true d | τ 0.02 | τ 0.03 | τ 0.05 | τ 0.08 | τ 0.1 | τ 0.15 | τ* (d/t90 = 1) |
+| Assumed $`d`$ / true $`d`$ | $`\tau`$ 0.02 | $`\tau`$ 0.03 | $`\tau`$ 0.05 | $`\tau`$ 0.08 | $`\tau`$ 0.1 | $`\tau`$ 0.15 | $`\tau^*`$ (d/t90 = 1) |
 |---|---|---|---|---|---|---|---|
 | 0.8 | 0.776 | 0.823 | 0.897 | 0.986 | 1.039 | 1.163 | 0.085 |
 | 0.9 | 0.829 | 0.877 | 0.952 | 1.042 | 1.095 | 1.217 | 0.064 |
@@ -809,12 +810,12 @@ diameter × threshold grid lies off the curve by up to 2.4–4.2% with ss (1.1�
 | 1.1 | 0.919 | 0.968 | 1.044 | 1.133 | 1.184 | 1.301 | 0.037 |
 | 1.2 | 0.957 | 1.007 | 1.082 | 1.169 | 1.220 | 1.335 | 0.028 |
 
-A counted-plot calibration would pick τ* for the diameter assumed. Within the same stand τ* transfers: with ss, the
-0.1–0.2 m layer then reads 1.009–1.010 for every diameter error, the model's assumed / true ρ̄ is the same at 1, 2 and
+A counted-plot calibration would pick $`\tau^*`$ for the diameter assumed. Within the same stand $`\tau^*`$ transfers: with ss, the
+0.1–0.2 m layer then reads 1.009–1.010 for every diameter error, the model's assumed / true $`\bar\rho`$ is the same at 1, 2 and
 4 m to within 0.4%, and for 2 cm stems it differs from that for 1 cm stems by at most 0.7%. But at 1000 stems/m² the
-same τ* gives 0.966–1.004 at 0–0.1 m (a 4% spread over the diameter errors), and with the base estimator τ* also
-absorbs its +7% self-shadowing bias (τ* = 0.032 at the true diameter), which then transfers less well (the ρ̄ ratio
-for 2 cm stems differs by up to 2.5%). τ* is therefore an empirical fit, not the physical threshold, and must not be
+same $`\tau^*`$ gives 0.966–1.004 at 0–0.1 m (a 4% spread over the diameter errors), and with the base estimator $`\tau^*`$ also
+absorbs its +7% self-shadowing bias ($`\tau^* = 0.032`$ at the true diameter), which then transfers less well (the $`\bar\rho`$ ratio
+for 2 cm stems differs by up to 2.5%). $`\tau^*`$ is therefore an empirical fit, not the physical threshold, and must not be
 reused for another scanner, stem size or density.
 
 **Range.** On the single-line plot (ss, 0–0.1 m), r90 by the cells' distance from the walk line:
