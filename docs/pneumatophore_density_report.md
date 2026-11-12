@@ -871,7 +871,7 @@ equal-weight mean of the window ratios is high. The evidence (stage-1 study, Sec
   infinitely tall stems in a periodic domain, lines recorded only after a pre-path long enough that every stem
   upstream of a recorded point lies on the line's past, as for tall stems in 3D) can continue each line through the
   stem it returned from, within that stem's own window only. This removes the bias: at the default window
-  (W = 0.15 m) and d_eff of 1–2.3 cm, the window mean relative to the path-weighted value fell from 1.03–1.09 to
+  ($`W = 0.15`$ m) and $`d_\mathrm{eff}`$ of 1–2.3 cm, the window mean relative to the path-weighted value fell from 1.03–1.09 to
   0.99–1.02 (at 600 stems/m², from 1.10 to 1.04).
 * *Crediting the whole path* behind every hit to the window edge (the crossing estimator's idea at window scale)
   overcorrects: 0.48–0.96 of the truth in the same model.
@@ -881,39 +881,41 @@ equal-weight mean of the window ratios is high. The evidence (stage-1 study, Sec
   view) read 1.060–1.075 at 0.1–0.4 m where fully observed (100 and 300 stems/m²), as the standard scenes do
   (1.067–1.087 at 0–0.2 m).
 * *Smaller in very regular stands.* In the 2D model, stems at least one diameter apart gave +0.9% against +2.9% for
-  random stems (1000 stems/m², d_eff = 1 cm). A reduction predicted from the hard-core spacing of stems with no gap
+  random stems (1000 stems/m², $`d_\mathrm{eff} = 1`$ cm). A reduction predicted from the hard-core spacing of stems with no gap
   was not detected.
 
 **First-order bias.** A hit's own stem shadows the rest of that ray's path to the edge of the window, on average the
-mean exit distance s of the window (the mean distance from a uniformly random point of the window to its edge along a
+mean exit distance $`s`$ of the window (the mean distance from a uniformly random point of the window to its edge along a
 uniformly random horizontal direction). To first order (derived for tall stems and horizontal ray directions, not
 fitted), the relative bias of the window mean is
 
-$$\beta = \frac{s\,d_\mathrm{eff}}{W^2} = c\,\frac{d_\mathrm{eff}}{W}, \qquad c = \frac{4\ln(1+\sqrt2) - \tfrac43(\sqrt2-1)}{2\pi} = 0.4732, \tag{11}$$
+```math
+\beta = \frac{s\,d_\mathrm{eff}}{W^2} = c\,\frac{d_\mathrm{eff}}{W}, \qquad c = \frac{4\ln(1+\sqrt2) - \tfrac43(\sqrt2-1)}{2\pi} = 0.4732 \qquad (11)
+```
 
-for a square window of width W (s = c W). Windows clipped at the grid's edge are rectangles: W² is replaced by their
-area and s by the rectangle's mean exit distance (`ray::meanExitDistance` in `raylib/raystemmodel.cpp`). To first
+for a square window of width $`W`$ ($`s = c W`$). Windows clipped at the grid's edge are rectangles: $`W^2`$ is replaced by their
+area and $`s`$ by the rectangle's mean exit distance (`ray::meanExitDistance` in `raylib/raystemmodel.cpp`). To first
 order the bias does not depend on the stem density or the number of rays.
 
 **Table 8.** First-order bias against the measured bias, measured as `density` / `pooled_density` − 1 without the
 correction (for uniform stems `pooled_density` has no self-shadowing bias, so the ratio leaves out the occlusion
 correction's errors), random stems, lowest 0.1 m, well observed cells, stage-1 scenes.
 
-| Case | W (m) | d_eff (cm) | d_eff/W | Eq. (11) | Measured |
+| Case | $`W`$ (m) | $`d_\mathrm{eff}`$ (cm) | $`d_\mathrm{eff}/W`$ | Eq. (11) | Measured |
 |---|---|---|---|---|---|
 | `--pool_radius 0.15` | 0.35 | 2.2–2.3 | 0.064 | +3.0% | +2.7 to +2.9% |
-| No footprint (d_eff = d) | 0.15 | 1.0 | 0.067 | +3.2% | +3.5 to +3.7% (300, 1000 stems/m²) |
+| No footprint ($`d_\mathrm{eff} = d`$) | 0.15 | 1.0 | 0.067 | +3.2% | +3.5 to +3.7% (300, 1000 stems/m²) |
 | `--pool_radius 0.1` | 0.25 | 2.2–2.3 | 0.089 | +4.2% | +4.4 to +4.7% |
 | Default | 0.15 | 2.2–2.3 | 0.149 | +7.0% | +8.8% (300 stems/m²; 2D model also +8.8%) |
 | Wide footprint (20 mm, 5 mrad) | 0.15 | 3.3 | 0.22 | +10.6% | +12 to +14% |
 | Single voxel (`--pool_radius 0`) | 0.05 | 2.2–2.3 | 0.45 | +21% | +28 to +29% |
 
-Eq. (11) is within 10% of the measured bias up to d_eff/W ≈ 0.1. Beyond that the bias is about 1.15–1.35 times
+Eq. (11) is within 10% of the measured bias up to $`d_\mathrm{eff}/W \approx 0.1`$. Beyond that the bias is about 1.15–1.35 times
 larger: the second-order term, derived below. (Over 30–600 stems/m² the default case measured +8.7 to +9.5% in both
 layers, except +6.1% at 600 stems/m² and 0–0.1 m.) Consequences:
 
-* More scanning will not reduce the bias, but it is predictable: it scales with d_eff/W, so it is larger for thicker
-  stems, longer ranges (d_eff of 3 cm at 5 m gives about +10% at W = 0.15 m) and smaller windows, and the +4–8% holds
+* More scanning will not reduce the bias, but it is predictable: it scales with $`d_\mathrm{eff}/W`$, so it is larger for thicker
+  stems, longer ranges ($`d_\mathrm{eff}`$ of 3 cm at 5 m gives about +10% at $`W = 0.15`$ m) and smaller windows, and the +4–8% holds
   only for this configuration.
 * The `patchiness_ratio` of about 1.09 for random stems is mostly this bias.
 * A larger window (`--pool_radius 0.1`, or larger voxels) reduces it, but reads low where stems are clustered or
@@ -923,10 +925,12 @@ layers, except +6.1% at 600 stems/m² and 0–0.1 m.) Consequences:
 **The correction (`--self_shadow_correction`, off by default).** With this option each voxel's neighbourhood density
 of Eq. (8) is divided by its first-order factor before the occlusion correction of Eq. (9):
 
-$$m_v' = \frac{m_v}{1 + s_v\,\bar\rho_v\,d / A_v}, \tag{12}$$
+```math
+m_v' = \frac{m_v}{1 + s_v\,\bar\rho_v\,d / A_v} \qquad (12)
+```
 
-where A_v is the area of the neighbourhood (W² away from the grid's edge), s_v its mean exit distance and
-ρ̄_v d its mean effective stem width. `pooled_density` is left as it was. The option needs `--estimator pooled` and
+where $`A_v`$ is the area of the neighbourhood ($`W^2`$ away from the grid's edge), $`s_v`$ its mean exit distance and
+$`\bar\rho_v d`$ its mean effective stem width. `pooled_density` is left as it was. The option needs `--estimator pooled` and
 `--stem_diameter`, and `rayrender` and `raydensity` refuse it otherwise. It is deterministic, added about 9% to
 the run time, and the run prints the mean
 factor (1.071 for a 300 stems/m² scene at the default settings). `raydensity` records it in the store's `.zattrs`
@@ -941,7 +945,7 @@ least 95% observed, except where stated).
 | No footprint, 300–1500 stems/m² | 1.019–1.031 | 0.992–1.001 | 1.039–1.044 | 1.010–1.016 |
 | Wide footprint, 100–300 stems/m² | 1.100–1.110 | 1.003–1.006 | 1.121–1.126 | 1.020–1.022 |
 | Stem diameter 0.5 and 2 cm | 1.057–1.100 | 1.000–1.003 | 1.057–1.128 | 1.008–1.028 |
-| Voxels 2.5–10 cm, pool radius 0.05–0.15 m (W 0.125–0.35 m) | 1.023–1.089 | 0.993–1.004 | 1.031–1.102 | 0.997–1.023 |
+| Voxels 2.5–10 cm, pool radius 0.05–0.15 m ($`W`$ 0.125–0.35 m) | 1.023–1.089 | 0.993–1.004 | 1.031–1.102 | 0.997–1.023 |
 | One height (0.6 m) or taller than the scanner (2 m), 100–300 stems/m², 0.1–0.4 m | | | 1.060–1.075 | 0.994–1.007 |
 | 1 cm range noise or 2 cm pose noise, 300 stems/m² | 1.061–1.066 | 0.995–1.000 | 1.058–1.076 | 0.991–1.008 |
 | Overlapping (Poisson) stems, 300 stems/m² | 1.032 | 0.968 | 1.047 | 0.981 |
@@ -984,41 +988,45 @@ For clumped stands the remedy found is a smaller window (Section 8.1.2), used pe
 
 #### 8.1.1 The second-order factor
 
-**Derived.** Take one isolated stem in a window of width W, crossed by many rays from all horizontal directions. Its
-shadow removes a fraction δ·g of the window's free path, where δ = d_eff/W and g is the mean exit distance from the
-stem's position to the window's edge (averaged over directions, in units of W). The window's ratio is therefore
-1/(1 − δg) times its share, and the mean over windows, with the stem uniformly placed, is
+**Derived.** Take one isolated stem in a window of width $`W`$, crossed by many rays from all horizontal directions. Its
+shadow removes a fraction $`\delta g`$ of the window's free path, where $`\delta = d_\mathrm{eff}/W`$ and $`g`$ is the mean exit distance from the
+stem's position to the window's edge (averaged over directions, in units of $`W`$). The window's ratio is therefore
+$`1/(1-\delta g)`$ times its share, and the mean over windows, with the stem uniformly placed, is
 
-$$1 + \beta = E\!\left[\frac{1}{1 - \delta g}\right] = 1 + E[g]\,\delta + E[g^2]\,\delta^2 + E[g^3]\,\delta^3 + \dots
-= 1 + 0.4732\,\delta + 0.2274\,\delta^2 + 0.1108\,\delta^3 + \dots \tag{13}$$
+```math
+1 + \beta = E\!\left[\frac{1}{1 - \delta g}\right] = 1 + E[g]\,\delta + E[g^2]\,\delta^2 + E[g^3]\,\delta^3 + \dots
+= 1 + 0.4732\,\delta + 0.2274\,\delta^2 + 0.1108\,\delta^3 + \dots \qquad (13)
+```
 
-The moments are close to powers of the first (c² = 0.2239, c³ = 0.1060), so the series is close to
-1 + x + x² + x³ + … = 1/(1 − x), with x = cδ the first-order term of Eq. (11): within 0.4% for x ≤ 0.3. The
-self-shadow factor is therefore 1/(1 − x) to second order, not 1 + x. At δ = 0.45 (single 5 cm voxels, d_eff
-2.25 cm) the expectation is 1.272 and 1/(1 − x) is 1.271, against 1.213 to first order and 1.275 from the 2D Monte
-Carlo; at the default window (δ = 0.15) 1/(1 − x) and 1 + x differ by 0.5%.
+The moments are close to powers of the first ($`c^2 = 0.2239`$, $`c^3 = 0.1060`$), so the series is close to
+$`1 + x + x^2 + x^3 + \dots = 1/(1-x)`$, with $`x = c\delta`$ the first-order term of Eq. (11): within 0.4% for $`x \le 0.3`$. The
+self-shadow factor is therefore $`1/(1-x)`$ to second order, not $`1 + x`$. At $`\delta = 0.45`$ (single 5 cm voxels, $`d_\mathrm{eff}`$
+2.25 cm) the expectation is 1.272 and $`1/(1-x)`$ is 1.271, against 1.213 to first order and 1.275 from the 2D Monte
+Carlo; at the default window ($`\delta = 0.15`$) $`1/(1-x)`$ and $`1 + x`$ differ by 0.5%.
 
 **Fitted.** Three further terms were fitted to the 2D Monte Carlo of the window estimator
-(`scripts/pneumatophore_self_shadow_window_mc.cpp`; 146 runs over δ = 0.1–1, Λ = N·d_eff·w = 0.03–2 and
-d/d_eff = 0.3, 0.44 and 1, two seeds each). The factor used is
+(`scripts/pneumatophore_self_shadow_window_mc.cpp`; 146 runs over $`\delta`$ = 0.1–1, $`\Lambda = N d_\mathrm{eff} w`$ = 0.03–2 and
+$`d/d_\mathrm{eff}`$ = 0.3, 0.44 and 1, two seeds each). The factor used is
 
-$$f = \frac{1}{\max\!\left(0.2,\ 1 - x - k_f\,\dfrac{\pi w_r^2}{16A} + 0.76\,x^3\right)} + 0.35\,x\,\tau, \qquad
-x = \frac{s\,d_\mathrm{eff}}{A}, \quad \tau = N d_\mathrm{eff}\, s, \tag{14}$$
+```math
+f = \frac{1}{\max\!\left(0.2,\ 1 - x - k_f\,\dfrac{\pi w_r^2}{16A} + 0.76\,x^3\right)} + 0.35\,x\,\tau, \qquad
+x = \frac{s\,d_\mathrm{eff}}{A}, \quad \tau = N d_\mathrm{eff}\, s \qquad (14)
+```
 
-with A the window's area and s its mean exit distance (`ray::selfShadowFactor`, used with
+with $`A`$ the window's area and $`s`$ its mean exit distance (`ray::selfShadowFactor`, used with
 `--self_shadow_second_order`):
 
-* *Footprint spread*, k_f π w_r²/(16A): the reported returns spread along the ray over a width w_r, the physical
-  stem for `surface` returns (w_r = d, k_f = 0.55) and the widened outline for `outline` returns (w_r = d_eff,
-  k_f = 1.2, fitted to only two runs).
-* *The cube*, 0.76 x³, fitted together with k_f to the runs with Λ ≤ 0.3. For stems widened by the footprint
-  (d/d_eff ≤ 0.44) the fit is within 1.5% up to δ = 1; for unwidened stems (d = d_eff) it is 2.3% low at δ = 0.45 and
-  up to 10% off at δ = 0.8–1.
-* *Density term*, 0.35·x·τ, with τ the optical depth of the exit distance and N·d_eff taken from the occlusion
-  neighbourhood. With it, the factor is within 1.2% for widened stems at δ = 0.3 and 0.45 up to Λ = 1. It is valid to
-  N·d_eff·W ≈ 1, about 900 stems/m² for single 5 cm voxels and a 2.25 cm effective width: at Λ = 2 the Monte Carlo
-  factor was 1.68–1.88 (δ = 0.45) against 1.33 fitted, and beyond Λ ≈ 1 it grows without bound. This is a hard limit
-  of single-voxel windows in dense stands, not only of the fit. The max(0.2, …) caps the first part of the factor at 5.
+* *Footprint spread*, $`k_f \pi w_r^2/(16A)`$: the reported returns spread along the ray over a width $`w_r`$, the physical
+  stem for `surface` returns ($`w_r = d`$, $`k_f = 0.55`$) and the widened outline for `outline` returns ($`w_r = d_\mathrm{eff}`$,
+  $`k_f = 1.2`$, fitted to only two runs).
+* *The cube*, $`0.76\,x^3`$, fitted together with $`k_f`$ to the runs with $`\Lambda \le 0.3`$. For stems widened by the footprint
+  ($`d/d_\mathrm{eff} \le 0.44`$) the fit is within 1.5% up to $`\delta = 1`$; for unwidened stems ($`d = d_\mathrm{eff}`$) it is 2.3% low at $`\delta = 0.45`$ and
+  up to 10% off at $`\delta`$ = 0.8–1.
+* *Density term*, $`0.35\,x\,\tau`$, with $`\tau`$ the optical depth of the exit distance and $`N d_\mathrm{eff}`$ taken from the occlusion
+  neighbourhood. With it, the factor is within 1.2% for widened stems at $`\delta`$ = 0.3 and 0.45 up to $`\Lambda = 1`$. It is valid to
+  $`N d_\mathrm{eff} W \approx 1`$, about 900 stems/m² for single 5 cm voxels and a 2.25 cm effective width: at $`\Lambda = 2`$ the Monte Carlo
+  factor was 1.68–1.88 ($`\delta = 0.45`$) against 1.33 fitted, and beyond $`\Lambda \approx 1`$ it grows without bound. This is a hard limit
+  of single-voxel windows in dense stands, not only of the fit. The $`\max(0.2, \dots)`$ caps the first part of the factor at 5.
 
 The derivation is exact for one isolated tall stem; the three terms are empirical, and the density term is specific
 to the conditions simulated.
@@ -1036,8 +1044,8 @@ the option that removes each.
 | Effect | Effect on `density` | Option |
 |---|---|---|
 | Neighbour top-up: voxels with fewer than 10 rays are blended with their neighbours by path, which under-weights the dense ones | −11% (−0.7%); −7 to −14% at ×0.25 over 300–1500 stems/m² | `--no_neighbour_priors` |
-| Occlusion response inverted per voxel: the voxel's solid fraction is noisy and a·R(a) is convex | −10% (−6%) | `--occlusion_radius 0.05` (invert R over the 3 × 3 voxels and apply its factor) |
-| First-order factor in place of 1/(1 − x): the factor is 4.6% too small | +5.3% (+5.3%) | `--self_shadow_second_order` |
+| Occlusion response inverted per voxel: the voxel's solid fraction is noisy and $`a\,R(a)`$ is convex | −10% (−6%) | `--occlusion_radius 0.05` (invert $`R`$ over the 3 × 3 voxels and apply its factor) |
+| First-order factor in place of $`1/(1-x)`$: the factor is 4.6% too small | +5.3% (+5.3%) | `--self_shadow_second_order` |
 | Finite-ray ratio bias: a ratio of sums over a few rays is biased high | +12.5% (+3.8%) | `--ratio_bias_correction` (delta method over the rays' segments) |
 
 The configuration that combines the four, "sw", is
@@ -1118,8 +1126,8 @@ rays. From voxel dumps of the block K scenes (per 5 cm layer, ray counts of the 
   neighbourhood mean: in the example above, ss read 1.18 against a truth of 1.37 in the bin of 2 rays or fewer, and 0.80
   against 0.63 in the 10–20-ray bin.
 
-ss's errors therefore cancel over a cell, but not within a ray-count bin. A per-voxel weight w(n) on sw keeps ss's
-error (1 − w)·(ss − truth) where n is small, which is negative, and drops the compensating positive error where n
+ss's errors therefore cancel over a cell, but not within a ray-count bin. A per-voxel weight $`w(n)`$ on sw keeps ss's
+error $`(1-w)(\mathrm{ss} - \mathrm{truth})`$ where $`n`$ is small, which is negative, and drops the compensating positive error where $`n`$
 is large. Ramping the weight from 0 at 2 rays to 1 at 10, 20 or 40 rays gave 0.994, 0.978 and 0.961 at 300
 stems/m² with the standard rays (the hybrid 0.999), and along cable roots at 150 stems/m² 0.962, 0.944 and 0.905
 with the standard rays (sw 0.978) and 0.874, 0.814 and 0.797 with a quarter of them (sw 0.921, the hybrid 0.938).
@@ -1204,9 +1212,9 @@ is itself a choice: the top is a solid disc of the widened outline, and a side h
 beam enters the widened outline but, under `surface`, reported lower.
 
 The return convention interacts with the tops. Deep inside a stand of uniform height, the longer paths of `surface`
-returns are balanced by as many extra returns carried down from the more strongly illuminated layer above, so R and
+returns are balanced by as many extra returns carried down from the more strongly illuminated layer above, so $`R`$ and
 the estimates are convention-independent. Where stems end, there are no returns to carry down from above, so a
-`surface` scene reads lower than an `outline` scene, by up to N d_eff R × 7 mm in the layer holding the tops (5% at
+`surface` scene reads lower than an `outline` scene, by up to $`N d_\mathrm{eff} R`$ × 7 mm in the layer holding the tops (5% at
 300, 15–19% at 1000 stems/m²). This was confirmed with stems of uniform height 0.6 m (one scene each, 1 cm stems):
 below the top layer the conventions agreed within about 1% at 300 stems/m² (`pooled_density` 1.023/1.031,
 1.009/1.016, 0.993/1.004, 0.977/0.980, 0.979/0.984 for 0–0.5 m) and within about 2% at 1000, while in the layer
@@ -1230,7 +1238,7 @@ and 15% of the stem returns in the 0.1 m layers up to 0.5 m (one reference scene
 1.010, 1.052, 1.117 and 1.203 there; stems of one height read 1.000–1.007 in every layer below their tops. So with
 the self-shadowing corrected, the remaining excess above 0.1 m is mostly the stem tops (5–20% at 0.2–0.5 m). The
 tops also account for most of the failures with `outline` returns, 2 cm stems and 5 cm pose error. A model of the
-tops (an end-cap term in G, or excluding returns at stem tops) has not been tried; real stem tops, which taper and
+tops (an end-cap term in $`G`$, or excluding returns at stem tops) has not been tried; real stem tops, which taper and
 are rounded, need checking against the dowel arrays of Section 9.2.
 
 ### 8.3 Poorly observed cells read low
@@ -1295,7 +1303,7 @@ is 0.05). The validation matrix (block D, ss, 0–0.1 m, 4 seeds) shows how the 
 stem size relative to the footprint: an assumed diameter 10% low or high changed `density` by −6.6% / +6.3% for
 0.5 cm stems, −4.9% / +4.3% for 1 cm stems (−3.6% / +2.7% at 1000 stems/m²) and −1.6% / +1.1% for 2 cm stems, all at
 300 stems/m² unless stated; ±20% gave −13.6% / +12.2%, −10.4% / +8.1% and −3.9% / +1.7%. Thin stems are seen mostly
-through the footprint, so the hit rate is nearly proportional to N, and N d inherits the relative error in d.
+through the footprint, so the hit rate is nearly proportional to $`N`$, and $`N d`$ inherits the relative error in $`d`$.
 A threshold calibrated on a counted plot also absorbs any error in the diameter (and, without the correction, the
 bias of Section 8.1). Block L (Section 7.10) measured how far such a calibration carries: with ss, a threshold fitted
 to compensate a diameter error of ±10–20% held within 1% across layers, ranges of 1–4 m and 2 cm stems (the last
@@ -1347,13 +1355,13 @@ spreads than 3 cm have not been run with sw or the hybrid; the hybrid read 0.938
 
 | Bias | Size | Applies to | Section |
 |---|---|---|---|
-| Self-shadowing | +4–9% (first order 0.4732 d_eff/W; 1/(1 − x) to second order) | `density`, default | 8.1, 7.9 |
+| Self-shadowing | +4–9% (first order $`0.4732\,d_\mathrm{eff}/W`$; $`1/(1-x)`$ to second order) | `density`, default | 8.1, 7.9 |
 | Residual with ss | 0.983–1.006 at 0–0.1 m and 0.997–1.020 at 0.1–0.2 m over the scan geometries of the matrix (partly a cancellation at 0–0.1 m) | `density`, ss | 8.1, 7.9 |
 | Heterogeneity within the window (patch edges, root lines) | hidden by the self-shadowing bias in the default; with ss, patches 0.92–0.98, cable roots 0.76–0.92 (150/m²) | `density` | 8.1, 8.6 |
 | Sparse rays in dense stands | sw 0.75–0.93 at 1000/m², 0–0.1 m (×0.25–×1 rays); the hybrid takes ss there | `density`, sw | 8.1.2 |
 | Hybrid | uniform within ±2% where ss passes (worst 1.019); patches 0.989–1.006; cable roots 0.94–0.98 (150/m²), 0.43–0.71 (500/m²); as ss in dense, poorly penetrated stands | `density`, hybrid | 8.1.3 |
 | Range or pose noise, with the hybrid | 1 cm range noise 0.990; 2 cm range noise 0.966–0.970; 2 cm pose noise 0.93–0.94 (ss passes) | `density`, hybrid, sw | 8.1.3 |
-| Beam footprint error | about −1.0 × the error in the mean d_eff (ss; −1.2× sw, −0.95× base); w₀ ±25%: −9 / +11%; γ ±25%: −4 / +5%; datasheet misreadings: w₀ +18 / −21%, γ +10 / −15%; matched only at 2 m: −13 to +18% at 3.5 m | all | 7.10 |
+| Beam footprint error | about −1.0 × the error in the mean $`d_\mathrm{eff}`$ (ss; −1.2× sw, −0.95× base); $`w_0`$ ±25%: −9 / +11%; $`\gamma`$ ±25%: −4 / +5%; datasheet misreadings: $`w_0`$ +18 / −21%, $`\gamma`$ +10 / −15%; matched only at 2 m: −13 to +18% at 3.5 m | all | 7.10 |
 | Stem tops | 5–20% at 0.2–0.5 m with ss, growing with height | both | 8.2, 7.9 |
 | Return convention (`outline` data) | +1.2–1.9% where no stems end, +3–4% more at 0.1–0.2 m; not removed by `--return_range` | both | 7.9, 8.2 |
 | Poor penetration (observed fraction below 0.9) | default about 1.00–1.03 at 0.5–0.9 by cancellation, 0.82–0.95 below 0.5; ss 0.94–0.97 and 0.78–0.91 | both | 8.3, 7.9 |
@@ -1362,7 +1370,7 @@ spreads than 3 cm have not been run with sw or the hybrid; the hybrid read 0.938
 | Diameter error ±10% (±20%) | 1 cm stems −4.9% / +4.3% (−10.4% / +8.1%), ss, 300/m² | both | 8.4 |
 | Diameter mixture (6/14 mm) | +0.7 to +1.3% | both | 7.5, 7.9 |
 | Threshold error (0.4×, 3×) | −11 to −12% / +22 to +27% | both | 8.4 |
-| Minimum gap ignored (g = 1) | +4% (100/m²) to +34% (1000/m²) | both | 5 |
+| Minimum gap ignored ($`g = 1`$) | +4% (100/m²) to +34% (1000/m²) | both | 5 |
 | Overlapping stems | ss 0.968 (300/m²), 0.874 (1000/m²): the occlusion correction assumes no overlap | both | 7.9 |
 | Patchiness within the cell | about −50% | `pooled_density` | 8.5 |
 | Vertical path weighting | e.g. −5% at 0.2–0.3 m (1000/m²) | `pooled_density` | 8.5 |
@@ -1396,54 +1404,54 @@ None of the method has been checked against field data.
 ### 9.2 Calibration and validation protocol
 
 The aim is to calibrate the beam model from the physics (not from the density result) and then validate the whole
-chain on independent data of known N d. Section 9.3 gives the accuracy each measurement needs.
+chain on independent data of known $`N d`$. Section 9.3 gives the accuracy each measurement needs.
 
 1. **Beam footprint, threshold and return convention (rod test).** Scan isolated vertical rods or dowels of known
    diameter, with a surface like the stems' (painted or wetted to match their reflectance), and measure the
-   effective width d_eff(r) at each range as twice the half-width of the band of beam offsets that return from the
-   rod (the hit fraction of the rays passing within a few centimetres of its axis). Fit w₀, γ and τ of Eq. (4)–(6)
-   to all the d_eff(r) points; the design below follows from a Fisher analysis of this fit and a synthetic rod test
+   effective width $`d_\mathrm{eff}(r)`$ at each range as twice the half-width of the band of beam offsets that return from the
+   rod (the hit fraction of the rays passing within a few centimetres of its axis). Fit $`w_0`$, $`\gamma`$ and $`\tau`$ of Eq. (4)–(6)
+   to all the $`d_\mathrm{eff}(r)`$ points; the design below follows from a Fisher analysis of this fit and a synthetic rod test
    (`scripts/pneumatophore_rod_calibration.py`).
 
    * *Degeneracies.* With one rod diameter, the beam scale and the threshold cannot be separated: a wider beam with
-     a higher threshold gives the same d_eff at every range (correlations of the fitted parameters ≥ 0.998, even
+     a higher threshold gives the same $`d_\mathrm{eff}`$ at every range (correlations of the fitted parameters ≥ 0.998, even
      with 9 ranges from 1 to 5 m). Scanning at several ranges separates only the exit diameter from the divergence.
-     So a single-rod, single-range calibration of the three parameters is not possible, and with w₀ and γ taken
-     from the datasheet it only moves τ.
+     So a single-rod, single-range calibration of the three parameters is not possible, and with $`w_0`$ and $`\gamma`$ taken
+     from the datasheet it only moves $`\tau`$.
    * *Several rod diameters* break the degeneracy, because the footprint widens thin rods relatively more: use rods
      of about the survey's mean stem diameter, half of it and twice it, plus thin rods (3–5 mm), which constrain the
-     threshold best. Fitted standard errors (ln w₀ / ln γ / ln τ, at 0.5 mm per d_eff point): 0.058 / 0.079 / 0.135
+     threshold best. Fitted standard errors ($`\ln w_0`$ / $`\ln\gamma`$ / $`\ln\tau`$, at 0.5 mm per $`d_\mathrm{eff}`$ point): 0.058 / 0.079 / 0.135
      for 0.3, 0.5 and 1 cm rods at 1, 3 and 5 m; 0.15 / 0.18 / 0.50 for 0.5, 1 and 2 cm rods at 1, 2 and 4 m.
    * *Ranges* of about 1, 2.5 and 4–5 m, spanning the survey's, with 1–5 × 10⁴ beams per rod and range (12 500–54 000
      in the synthetic test).
    * *Joint fit and χ² check.* Fit all three parameters jointly to all rods and ranges, and use χ² per degree of
-     freedom to flag a datasheet value that is wrong: with w₀ fixed 25% high, a threshold-only fit gave χ²/dof 4.7,
-     and with γ fixed 50% high 8.2 (1.3 with the right values).
-   * *What one rod gives.* The density needs only the mean d_eff / d at the survey's ranges (Eq. 15), and a single
+     freedom to flag a datasheet value that is wrong: with $`w_0`$ fixed 25% high, a threshold-only fit gave χ²/dof 4.7,
+     and with $`\gamma`$ fixed 50% high 8.2 (1.3 with the right values).
+   * *What one rod gives.* The density needs only the mean $`d_\mathrm{eff}/d`$ at the survey's ranges (Eq. 15), and a single
      1 cm rod at 1–5 m pins that to 0.9% (s.e.), although each parameter on its own is unconstrained. In the
-     synthetic test the three rods (0.5, 1, 2 cm) recovered 10.01 mm, 3.08 mrad and τ = 0.053 (true 10 mm, 3 mrad,
-     0.05), while the 1 cm rod alone gave 13.6 mm, 5.4 mrad and τ = 0.137, wrong parameters but the right mean
-     d_eff / d (0.999 of the true value over 1–3 m, 1.000 at 4 m).
-   * *The short-range trap.* A rod scanned only at 1.5–2.5 m hid a divergence error: with γ 50% high and τ fitted,
-     χ²/dof was 0.09 and the mean d_eff over 1–3 m was right to 0.3%, but at 4 m it was 4.3% high, so the density
+     synthetic test the three rods (0.5, 1, 2 cm) recovered 10.01 mm, 3.08 mrad and $`\tau = 0.053`$ (true 10 mm, 3 mrad,
+     0.05), while the 1 cm rod alone gave 13.6 mm, 5.4 mrad and $`\tau = 0.137`$, wrong parameters but the right mean
+     $`d_\mathrm{eff}/d`$ (0.999 of the true value over 1–3 m, 1.000 at 4 m).
+   * *The short-range trap.* A rod scanned only at 1.5–2.5 m hid a divergence error: with $`\gamma`$ 50% high and $`\tau`$ fitted,
+     χ²/dof was 0.09 and the mean $`d_\mathrm{eff}`$ over 1–3 m was right to 0.3%, but at 4 m it was 4.3% high, so the density
      there would read about 4% low. Never calibrate at a single range or a narrow band of ranges.
    * *Datasheet pitfalls.* Eq. (4) needs the 1/e² exit diameter and the full divergence angle. Reading an exit
      diameter quoted as FWHM as if it were 1/e² (the 1/e² diameter is 1.70 times the FWHM) gives +18% with ss
      (default beam, 300 stems/m²), and the reverse conversion −21%; taking a quoted half-angle divergence as the full
      angle gives +10%, and the reverse −15% (interpolated from Table 15).
 
-   Propagate the fitted mean d_eff / d through Eq. (15), then run the known-density array test of step 2.
+   Propagate the fitted mean $`d_\mathrm{eff}/d`$ through Eq. (15), then run the known-density array test of step 2.
 
-   *Open check.* In the synthetic rod test the measured d_eff lay 0.6–1.3% below the model (the script's port of
+   *Open check.* In the synthetic rod test the measured $`d_\mathrm{eff}`$ lay 0.6–1.3% below the model (the script's port of
    `effectiveStemWidth`) in the 1.27 and 1.73 m range bins, for every rod diameter (−0.9 to −1.9 s.e.), and scattered
    on both sides of it elsewhere (within 2.1 s.e.). This is probably the way
-   range was defined when extracting d_eff from the rays, not a library error, but it has to be resolved before the
+   range was defined when extracting $`d_\mathrm{eff}`$ from the rays, not a library error, but it has to be resolved before the
    rod test is used quantitatively, as it is half the ±2% budget.
 
    **Table 18.** Accuracy needed for each beam parameter alone, as the range of assumed / true values that keeps the
    density within ±2% and ±5% (0–0.1 m, 300 stems/m²; thresholds absolute, true 0.05).
 
-   | Beam, estimator | w₀, ±2% | w₀, ±5% | γ, ±2% | γ, ±5% | τ, ±2% | τ, ±5% |
+   | Beam, estimator | $`w_0`$, ±2% | $`w_0`$, ±5% | $`\gamma`$, ±2% | $`\gamma`$, ±5% | $`\tau`$, ±2% | $`\tau`$, ±5% |
    |---|---|---|---|---|---|---|
    | Default, ss | 0.945–1.050 | 0.870–1.133 | 0.884–1.107 | 0.735–1.288 | 0.044–0.056 | 0.036–0.065 |
    | Default, sw | 0.953–1.042 | 0.887–1.111 | 0.900–1.090 | 0.771–1.246 | 0.045–0.055 | 0.038–0.063 |
@@ -1451,29 +1459,29 @@ chain on independent data of known N d. Section 9.3 gives the accuracy each meas
    | Narrow, ss | 0.925–1.068 | 0.826–1.181 | 0.587–1.412 | beyond 0.5–2 | 0.040–0.060 | 0.028–0.079 |
    | Wide, ss | 0.960–1.038 | 0.904–1.100 | 0.888–1.104 | 0.746–1.280 | 0.045–0.054 | 0.039–0.061 |
 
-   Combined, the mean d_eff must be within ±2% at the survey's ranges for ±2% in the density: about ±0.45 mm on the
-   23 mm d_eff of 1 cm stems at 2 m with the default beam. ss already reads 1–2% high at 0.1–0.2 m (Section 8.1), so
-   the footprint should take only about ±1% of that: roughly w₀ to ±2.5%, γ to ±5% and τ to ±6%, each of which alone
+   Combined, the mean $`d_\mathrm{eff}`$ must be within ±2% at the survey's ranges for ±2% in the density: about ±0.45 mm on the
+   23 mm $`d_\mathrm{eff}`$ of 1 cm stems at 2 m with the default beam. ss already reads 1–2% high at 0.1–0.2 m (Section 8.1), so
+   the footprint should take only about ±1% of that: roughly $`w_0`$ to ±2.5%, $`\gamma`$ to ±5% and $`\tau`$ to ±6%, each of which alone
    moves the density by about 1%.
 
    *Return convention.* With `surface` ranging, grazing returns lie close to the plane through the rod's axis normal
-   to the beam; with `outline` ranging they lie up to (d_eff − d)/2 nearer the scanner. The difference (about 6–10 mm)
+   to the beam; with `outline` ranging they lie up to $`(d_\mathrm{eff} - d)/2`$ nearer the scanner. The difference (about 6–10 mm)
    is below single-shot range noise, so it needs many returns averaged; it matters, because `outline` data read 1–2%
    high (3–4% more where stems end) whichever convention the estimator is told (Section 7.9). The spread of returns
    also measures the range noise, and a pair of rods a few diameters apart shows how close stems shadow each other.
    Scan rods of different heights too, to see how real tops return.
-2. **Known-N d array (end-to-end test).** Build arrays of dowels of known diameter and positions (random,
+2. **Known-$`N d`$ array (end-to-end test).** Build arrays of dowels of known diameter and positions (random,
    non-overlapping; at least two densities, e.g. a few hundred and about 1000 per m²; uniform and varied heights;
    and rows imitating cable roots) over a few m² of flat ground, and scan them with the survey's hand-held SLAM
    workflow (same walking speed, line spacing and ground classification). Compare cell and layer estimates with
-   the known N d, with the hybrid and ss. This tests range noise, pose error, ground classification, stem tops and
+   the known $`N d`$, with the hybrid and ss. This tests range noise, pose error, ground classification, stem tops and
    the return convention together, with the beam parameters fixed from step 1.
 3. **Field quadrats.** In the survey area, count stems and measure their diameters at several heights (e.g. at the
    middle of each 0.1 m layer, to capture taper) in 1 × 1 m quadrats covering the range of densities and
    arrangements (random, patchy, cable roots). Record the minimum spacing between stems (for `--min_gap`), the stem
    heights, and for cable roots the lateral spread of the stems about the root lines and their density along them.
-   Use the measured mean diameter per layer as `--stem_diameter`, and compare the estimates with the quadrat N d,
-   per layer. Keep the quadrats used for checking separate from any used to tune parameters: calibrating τ on
+   Use the measured mean diameter per layer as `--stem_diameter`, and compare the estimates with the quadrat $`N d`$,
+   per layer. Keep the quadrats used for checking separate from any used to tune parameters: calibrating $`\tau`$ on
    quadrats absorbs the diameter error (and, without the correction, the bias of Section 8.1), and the fitted value
    is not the physical threshold: it spread by 4% between densities in simulation, and must not be reused for
    another scanner or stem size (Section 7.10).
@@ -1494,15 +1502,15 @@ unless stated; the accuracy for ±2% is interpolated from the synthetic sensitiv
 | 1 | Footprint correction itself | none: ×1.45–3.3 (narrow to wide beam) | always give `--footprint` | step 1 |
 | 2 | Arrangement: lateral spread of stems about cable roots, their density along them, patch sizes | ss: patches −2 to −8%, cable roots −8 to −24% (150/m², 1.5–6 cm spread) and −29 to −64% (500/m²); hybrid at 3 cm: −2 to −6% (150/m²), −29 to −57% (500/m²) (Sections 8.6, 8.1.3) | decides the configuration; with ss, the spread to about 0.5 cm | step 3 |
 | 3 | Footprint datasheet definitions | FWHM exit diameter read as 1/e²: +18% (reverse −21%); half-angle divergence read as full: +10% (reverse −15%) | the 1/e² diameter and full angle, or the rod test | step 1 |
-| 4 | Detection threshold τ | 0.02–0.15 when it is 0.05: −12 / +26% (−11 to −12 / +22 to +27% over 100–1000/m², Table 4) | 0.044–0.056 alone (±12%); ±6% within the beam's ±1% share | step 1 |
+| 4 | Detection threshold $`\tau`$ | 0.02–0.15 when it is 0.05: −12 / +26% (−11 to −12 / +22 to +27% over 100–1000/m², Table 4) | 0.044–0.056 alone (±12%); ±6% within the beam's ±1% share | step 1 |
 | 5 | Minimum gap between stems | assuming no gap when stems are 1 diameter apart: +10% (300/m²), +34% (1000/m²) (Table 6) | about 0.5, 0.2 and 0.07 diameters at 100, 300 and 1000 stems/m² | step 3 |
 | 6 | Overlapping (Poisson) stems | −13% at 1000/m², −3% at 300/m² (Section 7.9) | — (a model check: real stems don't overlap) | — |
 | 7 | Stem heights and tops | +5 to +20% at 0.2–0.5 m from the tops (Section 8.2) | not reached for layers holding tops; record the height distribution | steps 1–3 |
-| 8 | Exit diameter w₀ | ±25%: −9 / +11% | ±5% alone; ±2.5% within the beam's share | step 1 |
+| 8 | Exit diameter $`w_0`$ | ±25%: −9 / +11% | ±5% alone; ±2.5% within the beam's share | step 1 |
 | 9 | Trajectory (pose) error | ss: ≤ 2 cm 0.994–1.007, 5 cm −3 to −11% (Section 7.9); hybrid: 2 cm −5.6 / −6.8% (Section 8.1.3) | below about 2 cm (ss), about 1 cm (hybrid) | step 4; the SLAM system |
 | 10 | Beam parameters matched at one range only | −13 to +18% at 3.5 m from the line; 1.2–5.2% over a survey with lines 1 m apart (1.9–8.6% at 1000/m²) | calibrate at 1–5 m | step 1 |
 | 11 | Mean stem diameter per layer | ±20%: −10 / +8%; ±10%: −6.6 / +6.3% (0.5 cm stems), −4.9 / +4.3% (1 cm), −1.6 / +1.1% (2 cm) (Section 8.4) | about ±3% (0.5 cm), ±4% (1 cm, 0.4 mm), ±15% (2 cm) | step 3 |
-| 12 | Divergence γ | ±25%: −4 / +5% | ±11% alone; ±5% within the beam's share | step 1 |
+| 12 | Divergence $`\gamma`$ | ±25%: −4 / +5% | ±11% alone; ±5% within the beam's share | step 1 |
 | 13 | Return convention | `outline` data: +1.2–1.9%, +3–4% more where stems end (Section 7.9) | which of the two | step 1 |
 | 14 | Range noise | ss: ≤ 2 cm changes it by at most 1.3%, 3 cm by −0.7 / −1.7% (300/m²) and −1.1 / −3.3% (1000/m²) (Section 7.9); hybrid: 1 cm −1%, 2 cm −3 to −3.4% (Section 8.1.3) | below about 2 cm (ss), about 1 cm (hybrid) | step 1 |
 | 15 | Diameter distribution | log-normal CV 30%: +0.3–0.7%; 6/14 mm mixture: +0.7–1.3% (Section 7.5) | the mean matters; note strong bimodality | step 3 |
@@ -1511,9 +1519,9 @@ unless stated; the accuracy for ±2% is interpolated from the synthetic sensitiv
 
 So for uniform stands, where the arrangement does not apply, the beam footprint without a rod calibration is the
 largest error source: in the lowest 0.2 m, a datasheet misread or an unknown threshold alone exceeds every other
-plausible mistake except the minimum gap at high density. Its parameters act only through the mean d_eff (Eq. 15), so the rod test needs to
+plausible mistake except the minimum gap at high density. Its parameters act only through the mean $`d_\mathrm{eff}`$ (Eq. 15), so the rod test needs to
 fix that mean to about ±1% over the survey's ranges (Table 18). The threshold and the diameter both enter through
-d_eff, so a threshold calibrated on a counted plot absorbs a diameter error (Section 8.4); calibrate the beam from
+$`d_\mathrm{eff}`$, so a threshold calibrated on a counted plot absorbs a diameter error (Section 8.4); calibrate the beam from
 the rod test and measure the diameter directly. The minimum gap matters only at high densities, and the arrangement
 decides which configuration to use rather than entering as a parameter.
 
@@ -1600,7 +1608,7 @@ footprint in place of these values).
    Decimating first matters for speed: with the mesh of the full cloud (308 000 triangles, against 155 000),
    `raysplit` had not finished on the 0.9 M rays after 4 minutes, against 32 s with the mesh of the 3 cm decimated
    cloud. On real ground (rough, sloping, wet, with range noise) the distance must exceed the noise, and the loss at
-   the stem bases will be larger: check it on the known-N d array of Section 9.2.
+   the stem bases will be larger: check it on the known-$`N d`$ array of Section 9.2.
 3. Detect trunks above the pneumatophore layer (a circle fit per cluster, or `rayextract trunks`), extrapolate them
    to the ground, and set returns within each trunk's outline plus a margin larger than the range noise to zero
    alpha.
@@ -1618,7 +1626,7 @@ footprint in place of these values).
 
 | Eq. | Content | Code |
 |---|---|---|
-| (2) | G = sin θ | `raylib/raydensitygrid.h`: `gFunction` |
+| (2) | $`G = \sin\theta`$ | `raylib/raydensitygrid.h`: `gFunction` |
 | (3), (8) | Beer–Lambert hits / weighted path, per voxel and pooled | `raylib/raydensitygrid.h`: `DensityGrid::operator()`, `Voxel::density`, `DensityGrid::voxelDensity`; `raylib/raydensitygrid.cpp`: `calculateDensities`, `applyOverlapCorrection` |
 | (4)–(6) | Gaussian footprint, effective width | `raylib/raystemmodel.cpp`: `stripInterceptFraction`, `effectiveStemWidth`, `StemWidthModel` |
 | (7) | Crossing extension | `raylib/raydensitygrid.cpp`: `DensityGrid::calculateDensities` |
@@ -1680,7 +1688,7 @@ In the table, "study" is `scripts/pneumatophore_report_study.py` and "none" the 
 | Section 8.1.3, per-voxel rules and the selection effect | 101–104 | voxel dumps of the set H scenes from a build with a temporary dump of both estimates per voxel, which is not in the repository, so these numbers can't be reproduced from it |
 | Section 7.10 (Table 15, sensitivities, Eq. 15, diameter × threshold, range), Table 18 and the beam rows of Section 9.3 | 101–104 | `scripts/pneumatophore_validation_matrix.py --blocks L --jobs 2 --out footprint` (L runs only when named), then `scripts/pneumatophore_footprint_mismatch.py footprint`, which writes `footprint_tables.txt`, `footprint_sens.txt`, `footprint_deff.txt`, `footprint_grid.txt`, `footprint_range.txt` and `footprint_rows.csv` into `footprint/` |
 | Section 9.2, rod test | 201–202 (synthetic rods) | `scripts/pneumatophore_rod_calibration.py design --out rod` (Fisher analysis: `rod_design.txt`) and `scripts/pneumatophore_rod_calibration.py simulate --out rod` (4 M rays per scene, needs `raycreate`; `rod_simulation.txt`) |
-| Section 8.1.1 (Eqs. 13, 14) | 1–2 per configuration | `scripts/pneumatophore_self_shadow_window_mc.cpp` (key–value arguments, e.g. `N 300 d 0.01 deff 0.0225 w 0.05 conv 0 M 6e6 seed 1 D 0.08 L 3`), over δ = d_eff/w in 0.1, 0.2, 0.3, 0.45, 0.6, 0.8, 1, N d_eff w in 0.03, 0.3, 1, 2 and d/d_eff in 1, 0.44, 0.3 (φ ≤ 0.25), seeds 1 and 2; the moments of Eq. (13) by numerical integration over the square |
+| Section 8.1.1 (Eqs. 13, 14) | 1–2 per configuration | `scripts/pneumatophore_self_shadow_window_mc.cpp` (key–value arguments, e.g. `N 300 d 0.01 deff 0.0225 w 0.05 conv 0 M 6e6 seed 1 D 0.08 L 3`), over $`\delta = d_\mathrm{eff}/w`$ in 0.1, 0.2, 0.3, 0.45, 0.6, 0.8, 1, $`N d_\mathrm{eff} w`$ in 0.03, 0.3, 1, 2 and $`d/d_\mathrm{eff}`$ in 1, 0.44, 0.3 ($`\phi \le 0.25`$), seeds 1 and 2; the moments of Eq. (13) by numerical integration over the square |
 | Section 8.1, 2D Monte Carlo | 3 per configuration (6 for one) | `scripts/pneumatophore_self_shadow_mc2d.cpp` (key–value arguments, e.g. `N 300 d 0.01 deff 0.0234 D 0.22 w 0.05 k 1`) |
 | Table 10 and the remedies of Section 8.3 | 101 (and 102 at 1000 and 1500 stems/m²) | `scripts/pneumatophore_low_observation_study.py` |
 | Section 10, ground removal | 101 | the commands of step 2 on `raycreate pneumatophores 101 --stems_per_m2 300 --footprint 0.01,0.003,0.05 --plot_width 4 --rays 900000 --truth_cells 1,1,0.1 --ground_returns`, estimated over `--min_bound -2,-2,0 --max_bound 2,2,0.3`, against the same scene without `--ground_returns` |
