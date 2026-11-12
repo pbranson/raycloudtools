@@ -8,19 +8,19 @@ with real data. Tiling, the Zarr output and large domains are described in
 
 ## Abstract
 
-Hydrodynamic models of flow through mangrove pneumatophores need the frontal area per unit volume, a = N·d (stems
+Hydrodynamic models of flow through mangrove pneumatophores need the frontal area per unit volume, $`a = N d`$ (stems
 per m² of ground times stem diameter, m⁻¹), in cells of about 1 × 1 × 0.1 m over forests of about 300 × 300 m. We
-estimate a from hand-held SLAM lidar ray clouds by treating each ray as a probe of a medium of vertical cylinders:
-the interception rate per metre of ray is a·sin θ, which gives a G-weighted Beer–Lambert maximum-likelihood
+estimate $`a`$ from hand-held SLAM lidar ray clouds by treating each ray as a probe of a medium of vertical cylinders:
+the interception rate per metre of ray is $`a \sin\theta`$, which gives a $`G`$-weighted Beer–Lambert maximum-likelihood
 estimate. Two corrections make it usable for 1 cm stems: (i) a Gaussian beam footprint model, which widens thin
-stems to an effective width d_eff(r) of 2–3 cm and would otherwise overestimate a by 2.1–2.6 times; and (ii) an
+stems to an effective width $`d_\mathrm{eff}(r)`$ of 2–3 cm and would otherwise overestimate $`a`$ by 2.1–2.6 times; and (ii) an
 occlusion (space-occupancy) correction for non-overlapping stems, from a deterministic Monte Carlo response table
-R(φ, ρ, g), applied to hits and path pooled over a horizontal neighbourhood of voxels. Voxel estimates are averaged
+$`R(\phi, \rho, g)`$, applied to hits and path pooled over a horizontal neighbourhood of voxels. Voxel estimates are averaged
 into cells (`density`, the main output) and also pooled (`pooled_density`), and their ratio flags patchiness.
 
 On synthetic scans of randomly placed stems (30–1000 stems/m², 5 cm voxels), `density` in the lowest 0.1 m reads
 4–8% high. This is self-shadowing: a stem removes the free path behind it within its own pooling window but keeps
-its own hits. To first order the bias is c·d_eff/W with c = 0.4732 (W the window width), whatever the number of rays
+its own hits. To first order the bias is $`c\,d_\mathrm{eff}/W`$ with $`c = 0.4732`$ ($`W`$ the window width), whatever the number of rays
 or the stem density, and the optional `--self_shadow_correction` (here "ss") divides each window by this factor. A
 wider validation matrix (Section 7.9: scan geometry, range and pose noise, diameter error and distribution, stem
 heights, return convention, spacing and window size; 199 configurations, 4–8 seeds) tested a ±2% criterion in the
@@ -33,7 +33,7 @@ returns from stem tops cause most of the remaining excess above 0.1 m.
 In clumped stands ss reads low (patches 0.92–0.98, stems along cable roots 0.76–0.92), because there the
 self-shadowing had been cancelling an opposite bias of uneven windows: the default's accuracy in patches, and its
 13% low reading along cable roots, rest on that cancellation. A single-voxel configuration ("sw": a derived
-second-order self-shadow factor 1/(1 − x) plus three small-sample fixes; Section 8.1.2) resolves the clustering
+second-order self-shadow factor $`1/(1-x)`$ plus three small-sample fixes; Section 8.1.2) resolves the clustering
 instead (cable roots 0.98, against 0.87 with the default and 0.81 with ss; patches 0.97–1.02), but reads low for dense
 stems under sparse scans (1000 stems/m²: 0.75–0.93), because without the neighbour top-up the densest voxels go
 unobserved.
@@ -88,17 +88,19 @@ Pneumatophores are the vertical aerial roots of mangroves such as *Avicennia*: t
 0.1–0.5 m) and dense (hundreds to thousands per m²). For flow and wave models they are an array of vertical
 cylinders, characterised per unit volume by
 
-$$a(z) = N(z)\,d, \qquad \phi(z) = N(z)\,\frac{\pi d^2}{4} = \frac{\pi d}{4}\,a(z), \tag{1}$$
+```math
+a(z) = N(z)\,d, \qquad \phi(z) = N(z)\,\frac{\pi d^2}{4} = \frac{\pi d}{4}\,a(z) \qquad (1)
+```
 
-where N(z) is the number of stems per m² of ground that reach height z, d the stem diameter, a the frontal area per
-unit volume (m⁻¹) and φ the solid (volume) fraction. The drag force per unit volume of a canopy model is
-proportional to a, and the frontal area index is ∫a dz. For stems placed independently at random (a Poisson
-process, so stems may overlap), the probability that a horizontal line of length L misses every stem is
-exp(−a L). Real stems don't overlap; for a non-overlapping (hard-core) arrangement the interception rate per unit
-of free path is larger by R(φ, 1) (Section 5), so the gap fraction is approximately exp(−a R(φ, 1) L): the exponent
+where $`N(z)`$ is the number of stems per m² of ground that reach height $`z`$, $`d`$ the stem diameter, $`a`$ the frontal area per
+unit volume (m⁻¹) and $`\phi`$ the solid (volume) fraction. The drag force per unit volume of a canopy model is
+proportional to $`a`$, and the frontal area index is $`\int a\,dz`$. For stems placed independently at random (a Poisson
+process, so stems may overlap), the probability that a horizontal line of length $`L`$ misses every stem is
+$`\exp(-a L)`$. Real stems don't overlap; for a non-overlapping (hard-core) arrangement the interception rate per unit
+of free path is larger by $`R(\phi, 1)`$ (Section 5), so the gap fraction is approximately $`\exp(-a R(\phi, 1) L)`$: the exponent
 is 3% larger at 300 and 10% larger at 1000 stems/m² of 1 cm stems.
 
-The target is a in cells of the hydrodynamic grid, e.g. 1 × 1 × 0.1 m (300 × 300 × 6 cells for a 300 m domain and
+The target is $`a`$ in cells of the hydrodynamic grid, e.g. 1 × 1 × 0.1 m (300 × 300 × 6 cells for a 300 m domain and
 the lowest 0.6 m), from hand-held SLAM lidar. A ray cloud stores each return (or the end of a ray with no return)
 with the sensor position at that time, so both where the beam stopped and the free space it crossed are known. The
 estimator works on a voxel grid (5 cm by default) and aggregates the voxels into cells.
@@ -111,26 +113,30 @@ estimator works on a voxel grid (5 cm by default) and aggregates the voxels into
 `DensityGrid::calculateDensities`), and the voxels they cross are walked (`DensityGrid::operator()` in
 `raylib/raydensitygrid.h`).
 
-**Interception by vertical cylinders.** A ray at zenith angle θ (measured from vertical) moves sin θ horizontally
-per metre of ray. It intercepts a vertical cylinder of diameter d when the stem's centre lies within d/2 of the
-ray's horizontal track, so for N stems per m², placed at random, the interception rate per metre of ray is
+**Interception by vertical cylinders.** A ray at zenith angle $`\theta`$ (measured from vertical) moves $`\sin\theta`$ horizontally
+per metre of ray. It intercepts a vertical cylinder of diameter $`d`$ when the stem's centre lies within $`d/2`$ of the
+ray's horizontal track, so for $`N`$ stems per m², placed at random, the interception rate per metre of ray is
 
-$$\lambda(\theta) = G(\theta)\,a, \qquad G(\theta) = \sin\theta. \tag{2}$$
+```math
+\lambda(\theta) = G(\theta)\,a, \qquad G(\theta) = \sin\theta. \qquad (2)
+```
 
-This replaces the default G = 0.5 of raycloudtools, which applies to leaves with a spherical (isotropic) angle
-distribution and gives leaf area per volume. For vertical stems it would bias the estimate by a factor 2 sin θ,
-about 2 for the near-horizontal rays of a hand-held scanner (test `RayDensityVerticalCylinders`: at θ = 90° the
-estimate was 1.003 of the truth with G = sin θ, and 2.005 with G = 0.5). The end caps (stem tops) are not part of
+This replaces the default $`G = 0.5`$ of raycloudtools, which applies to leaves with a spherical (isotropic) angle
+distribution and gives leaf area per volume. For vertical stems it would bias the estimate by a factor $`2 \sin\theta`$,
+about 2 for the near-horizontal rays of a hand-held scanner (test `RayDensityVerticalCylinders`: at $`\theta = 90^\circ`$ the
+estimate was 1.003 of the truth with $`G = \sin\theta`$, and 2.005 with $`G = 0.5`$). The end caps (stem tops) are not part of
 the model (Section 8.2).
 
-**Likelihood.** If hits along a ray form a Poisson process with rate G a, a ray i that crosses a voxel with path
-length L_i inside it contributes the log-likelihood h_i ln(G_i a) − a G_i L_i, where h_i is 1 if it ends with a hit
-in the voxel and 0 otherwise. Maximising over a gives the G-weighted Beer–Lambert estimate
+**Likelihood.** If hits along a ray form a Poisson process with rate $`G a`$, a ray $`i`$ that crosses a voxel with path
+length $`L_i`$ inside it contributes the log-likelihood $`h_i \ln(G_i a) - a G_i L_i`$, where $`h_i`$ is 1 if it ends with a hit
+in the voxel and 0 otherwise. Maximising over $`a`$ gives the $`G`$-weighted Beer–Lambert estimate
 
-$$\hat a = \frac{H}{\sum_i G_i L_i}, \tag{3}$$
+```math
+\hat a = \frac{H}{\sum_i G_i L_i} \qquad (3)
+```
 
-with H the number of hits in the voxel (or neighbourhood, Section 4). With the beam footprint (Section 3), G_i is
-replaced by G_i ρ_i.
+with $`H`$ the number of hits in the voxel (or neighbourhood, Section 4). With the beam footprint (Section 3), $`G_i`$ is
+replaced by $`G_i \rho_i`$.
 
 **Path and hit rules.**
 
@@ -143,7 +149,7 @@ replaced by G_i ρ_i.
   footprint correction needs it (`range_offset_`).
 * *Zero-length passes.* A ray that only grazes a voxel edge, corner or face adds no path and is not counted as one
   of the voxel's rays (this keeps the ray counts identical between tiled and single runs).
-* *Ray angle selection.* Rays with sin θ below `--min_sin_zenith` (default 0.1) or above `--max_sin_zenith`
+* *Ray angle selection.* Rays with $`\sin\theta`$ below `--min_sin_zenith` (default 0.1) or above `--max_sin_zenith`
   (default 1) are ignored. Near-vertical rays carry almost no information on vertical stems, and selecting rays on
   direction alone does not bias the estimate.
 
@@ -151,34 +157,40 @@ replaced by G_i ρ_i.
 
 A lidar pulse has a finite, range-dependent spot. We model it as a Gaussian beam of 1/e² diameter
 
-$$w(r) = w_0 + \gamma\,r, \tag{4}$$
+```math
+w(r) = w_0 + \gamma\,r \qquad (4)
+```
 
-with exit diameter w₀ and full divergence γ (both at the 1/e² level, from the scanner's specification), so its
-standard deviation is σ = w/4. A vertical cylinder is seen from any horizontal direction as a strip of width d. If
-the beam axis passes at horizontal offset x from the stem's centre, the fraction of the beam's power that the
+with exit diameter $`w_0`$ and full divergence $`\gamma`$ (both at the 1/e² level, from the scanner's specification), so its
+standard deviation is $`\sigma = w/4`$. A vertical cylinder is seen from any horizontal direction as a strip of width $`d`$. If
+the beam axis passes at horizontal offset $`x`$ from the stem's centre, the fraction of the beam's power that the
 stem intercepts is
 
-$$F(x) = \tfrac12\left[\operatorname{erf}\!\left(\frac{x + d/2}{\sqrt2\,\sigma}\right) - \operatorname{erf}\!\left(\frac{x - d/2}{\sqrt2\,\sigma}\right)\right]. \tag{5}$$
+```math
+F(x) = \tfrac12\left[\operatorname{erf}\!\left(\frac{x + d/2}{\sqrt2\,\sigma}\right) - \operatorname{erf}\!\left(\frac{x - d/2}{\sqrt2\,\sigma}\right)\right] \qquad (5)
+```
 
-A return is triggered when F ≥ τ, the detection threshold (a fraction of the beam power). The stem is therefore
+A return is triggered when $`F \ge \tau`$, the detection threshold (a fraction of the beam power). The stem is therefore
 detected over an effective width
 
-$$d_\mathrm{eff}(r) = 2x^*, \quad F(x^*) = \tau, \qquad \rho(r) = d_\mathrm{eff}(r)/d, \tag{6}$$
+```math
+d_\mathrm{eff}(r) = 2x^*, \quad F(x^*) = \tau, \qquad \rho(r) = d_\mathrm{eff}(r)/d \qquad (6)
+```
 
 found by bisection (`raylib/raystemmodel.cpp`, `stripInterceptFraction`, `effectiveStemWidth`), and zero when
-F(0) < τ (a stem too thin ever to be detected). For 1 cm stems, a 10 mm, 3 mrad beam and τ = 0.05, d_eff is 2.07 cm
-at 1 m and 3.05 cm at 5 m; the path-weighted mean ρ over the voxels of the synthetic scans was 2.13–2.42. The
-interception rate becomes N d_eff sin θ = a ρ G, so each ray segment is weighted by G ρ(r), with r the range of the
+$`F(0) < \tau`$ (a stem too thin ever to be detected). For 1 cm stems, a 10 mm, 3 mrad beam and $`\tau = 0.05`$, $`d_\mathrm{eff}`$ is 2.07 cm
+at 1 m and 3.05 cm at 5 m; the path-weighted mean $`\rho`$ over the voxels of the synthetic scans was 2.13–2.42. The
+interception rate becomes $`N d_\mathrm{eff} \sin\theta = a \rho G`$, so each ray segment is weighted by $`G \rho(r)`$, with $`r`$ the range of the
 segment's midpoint from the ray's original start (`StemWidthModel`, tabulated every 1 cm up to 100 m and on a
-logarithmic grid beyond), and the estimate stays a = N d for the true mean diameter. Without this correction the
+logarithmic grid beyond), and the estimate stays $`a = N d`$ for the true mean diameter. Without this correction the
 synthetic 1 cm stems were overestimated 2.1–2.6 times.
 
-**Inputs.** w₀ and γ come from the scanner's beam specification. The threshold τ is not a published parameter: it
+**Inputs.** $`w_0`$ and $`\gamma`$ come from the scanner's beam specification. The threshold $`\tau`$ is not a published parameter: it
 depends on the detector, the return mode, the target's reflectance and the range, and has to be calibrated
-(Section 9). The diameter d is an input: it should be the mean diameter at the heights analysed (stems taper). The
-result is about as sensitive to d as to τ (Section 7.5), because with a 13–25 mm footprint the hit rate is roughly
-proportional to N (d + 1–2 cm), so the data mainly measure the stem count, and N d inherits about half of any
-relative error in d.
+(Section 9). The diameter $`d`$ is an input: it should be the mean diameter at the heights analysed (stems taper). The
+result is about as sensitive to $`d`$ as to $`\tau`$ (Section 7.5), because with a 13–25 mm footprint the hit rate is roughly
+proportional to $`N (d + 1\text{–}2\,\mathrm{cm})`$, so the data mainly measure the stem count, and $`N d`$ inherits about half of any
+relative error in $`d`$.
 
 **Return range convention.** When the beam axis misses a stem but enough power hits it, where along the beam is the
 return reported? `--return_range` selects the model, in the generator and in the correction:
@@ -186,7 +198,7 @@ return reported? `--return_range` selects the model, in the generator and in the
 * `surface` (default): at the range of the physical stem surface (the nearest illuminated part of the stem), or of
   the beam axis's closest approach to the stem when the axis misses it. A time-of-flight scanner ranges to the
   illuminated surface, so this is the physically reasonable default.
-* `outline`: where the beam axis enters the footprint-widened outline (diameter d_eff).
+* `outline`: where the beam axis enters the footprint-widened outline (diameter $`d_\mathrm{eff}`$).
 
 In the generator the two conventions return the same rays (the side hit is tested where the beam axis enters the
 widened outline), and with `surface` each partial return is reported 6.4–6.9 mm further along the ray
@@ -202,16 +214,18 @@ discrete stems, against the assumption of the standard per-voxel estimate (many 
 Three estimators are available (`--estimator`); the results quoted are plot totals in the lowest 0.1 m, over 30–1500
 random stems/m² (Table 2).
 
-**`beer_lambert`** (the raycloudtools default): Eq. (3) per voxel, multiplied by the small-sample factor (n − 1)/n
-of the original estimator, for the voxel's n rays (`DensityGrid::Voxel::density`). It read 1.24–1.31 of the truth
+**`beer_lambert`** (the raycloudtools default): Eq. (3) per voxel, multiplied by the small-sample factor $`(n-1)/n`$
+of the original estimator, for the voxel's $`n`$ rays (`DensityGrid::Voxel::density`). It read 1.24–1.31 of the truth
 in the lowest 0.1 m and 1.31–1.39 at 0.1–0.2 m (cell means). Most of this is the self-shadowing bias of
-Section 8.1 at a window of one voxel (W = 5 cm: +21% to first order, +28–29% measured with `--estimator pooled
+Section 8.1 at a window of one voxel ($`W`$ = 5 cm: +21% to first order, +28–29% measured with `--estimator pooled
 --pool_radius 0`).
 
 **`crossing`**: hit rays count their path to where they would have left the voxel, plus the mean chord of the
-widened stem that remains beyond the return, divided by sin θ:
+widened stem that remains beyond the return, divided by $`\sin\theta`$:
 
-$$\Delta L = \frac{1}{\sin\theta}\times\begin{cases}\pi d_\mathrm{eff}/4 & \text{outline}\\ \pi (d_\mathrm{eff}^2 + d^2)/(8 d_\mathrm{eff}) & \text{surface}\end{cases} \tag{7}$$
+```math
+\Delta L = \frac{1}{\sin\theta}\times\begin{cases}\pi d_\mathrm{eff}/4 & \text{outline}\\ \pi (d_\mathrm{eff}^2 + d^2)/(8 d_\mathrm{eff}) & \text{surface}\end{cases} \qquad (7)
+```
 
 (`DensityGrid::calculateDensities`). Without a footprint, density = hits / crossing length does not assume random
 placement within the voxel. But it has no occlusion correction, and with a footprint the entries into a widened
@@ -220,15 +234,17 @@ stem that lie inside another widened stem are never observed. It read 1.05 at 30
 recommended with a footprint.
 
 **`pooled`** (recommended): the Beer–Lambert hits and weighted path are summed over a horizontal neighbourhood
-𝒩(v) of each voxel v before taking the ratio,
+$`\mathcal N(v)`$ of each voxel $`v`$ before taking the ratio,
 
-$$m_v = \frac{\sum_{u\in\mathcal N(v)} H_u}{\sum_{u\in\mathcal N(v)} \sum_i G_i \rho_i L_i}, \qquad \bar\rho_v = \frac{\sum_{u}\sum_i \rho_i\,(G_i \rho_i L_i)}{\sum_u \sum_i G_i \rho_i L_i}, \tag{8}$$
+```math
+m_v = \frac{\sum_{u\in\mathcal N(v)} H_u}{\sum_{u\in\mathcal N(v)} \sum_i G_i \rho_i L_i}, \qquad \bar\rho_v = \frac{\sum_{u}\sum_i \rho_i\,(G_i \rho_i L_i)}{\sum_u \sum_i G_i \rho_i L_i} \qquad (8)
+```
 
-and m_v is corrected for occlusion (Section 5) using the neighbourhood's mean widening ρ̄_v. The voxel takes the
-corrected value a_v and keeps its own path length (so `pooled_density`, Section 6, weights it by its own path).
-Voxels that no ray reached are not assigned a value. 𝒩(v) is the (2k+1) × (2k+1) voxels centred on v in its
-horizontal layer, with k = round(`--pool_radius` / voxel width), so it spans ±(k + ½) voxels and its width is
-W = (2k + 1) w: 0.15 m (±0.075 m) for the default 0.05 m at 5 cm voxels, 0.25 m for 0.1 m, and 0.30 m for 0.05 m at
+and $`m_v`$ is corrected for occlusion (Section 5) using the neighbourhood's mean widening $`\bar\rho_v`$. The voxel takes the
+corrected value $`a_v`$ and keeps its own path length (so `pooled_density`, Section 6, weights it by its own path).
+Voxels that no ray reached are not assigned a value. $`\mathcal N(v)`$ is the $`(2k+1) \times (2k+1)`$ voxels centred on $`v`$ in its
+horizontal layer, with $`k`$ = round(`--pool_radius` / voxel width), so it spans $`\pm(k + \tfrac12)`$ voxels and its width is
+$`W = (2k+1) w`$: 0.15 m (±0.075 m) for the default 0.05 m at 5 cm voxels, 0.25 m for 0.1 m, and 0.30 m for 0.05 m at
 10 cm voxels (the run prints the window). It changes in steps with the voxel size. The window is computed with
 summed-area tables (`DensityGrid::applyOverlapCorrection`).
 
@@ -241,7 +257,7 @@ tightly than the window read low (Section 8.6), and the remaining self-shadowing
 
 With `beer_lambert` and the occlusion correction on (a stem diameter given), the neighbourhood ratio is used only to
 compute the correction factor, which is applied to the voxel's own estimate. With `pooled`, `--self_shadow_correction`
-also divides m_v by a self-shadow factor before the occlusion correction (Section 8.1, Eq. 12), and four further
+also divides $`m_v`$ by a self-shadow factor before the occlusion correction (Section 8.1, Eq. 12), and four further
 options, all off by default, adapt the estimator to single-voxel windows (`--pool_radius 0`): the second-order
 self-shadow factor (`--self_shadow_second_order`), the occlusion response inverted over a larger neighbourhood
 (`--occlusion_radius`), a finite-ray correction of each window's ratio (`--ratio_bias_correction`) and no
@@ -253,53 +269,55 @@ computes the default-window and the single-voxel estimates in the same pass and 
 ## 5. Occlusion and space-occupancy correction
 
 The pooled estimate measures hits per unit of free path. For randomly placed, overlapping discs (a Boolean model)
-the free path to the next hit is exponential, and the hit rate per unit free path is exactly N d_eff, however much
+the free path to the next hit is exponential, and the hit rate per unit free path is exactly $`N d_\mathrm{eff}`$, however much
 the widened discs overlap. Real stems don't overlap. In a non-overlapping (hard-core) arrangement the
-footprint-widened stems leave less free space than overlapping ones would, so the measured rate exceeds N d_eff.
-With a perfect beam (d_eff = d) it is at least a/(1 − φ), because the stems' own cross-sections are excluded from
+footprint-widened stems leave less free space than overlapping ones would, so the measured rate exceeds $`N d_\mathrm{eff}`$.
+With a perfect beam ($`d_\mathrm{eff} = d`$) it is at least $`a/(1-\phi)`$, because the stems' own cross-sections are excluded from
 the free path, and a little more because rays enter the stem layer at random points, so sample the gaps between
 stems in proportion to their length, and hard-core gaps are more regular than exponential.
 
-**Response.** We define the response as the measured rate relative to N d_eff,
+**Response.** We define the response as the measured rate relative to $`N d_\mathrm{eff}`$,
 
-$$R(\phi, \rho, g) = \frac{\text{hits per unit free path}}{N\,d_\mathrm{eff}}, \qquad m = a\,R\!\left(\tfrac{\pi d}{4} a,\ \bar\rho,\ g\right), \tag{9}$$
+```math
+R(\phi, \rho, g) = \frac{\text{hits per unit free path}}{N\,d_\mathrm{eff}}, \qquad m = a\,R\!\left(\tfrac{\pi d}{4} a,\ \bar\rho,\ g\right) \qquad (9)
+```
 
-where g is the minimum gap between stem surfaces in diameters (stem centres at least d(1 + g) apart; `--min_gap`).
-R is computed by a 2D Monte Carlo simulation (`raylib/raystemmodel.cpp`, `freePathResponse`): in units of d,
-1500 non-overlapping discs are placed by random sequential addition in a square sized for φ; 10 000 lines start
+where $`g`$ is the minimum gap between stem surfaces in diameters (stem centres at least $`d(1+g)`$ apart; `--min_gap`).
+$`R`$ is computed by a 2D Monte Carlo simulation (`raylib/raystemmodel.cpp`, `freePathResponse`): in units of $`d`$,
+1500 non-overlapping discs are placed by random sequential addition in a square sized for $`\phi`$; 10 000 lines start
 from uniformly random points of the free space in the central 80% of the square, in random directions, and run to
-their first reported return or the edge of the square; R = Σ hits / (Σ path · N ρ), pooled over 64 independent
+their first reported return or the edge of the square; $`R = \sum\text{hits} / (\sum\text{path}\cdot N \rho)`$, pooled over 64 independent
 realisations. The free space follows the return convention: under `outline`, outside the widened outlines; under
 `surface`, outside the physical stems, except inside a widened outline beyond its reported return (a ray there
 would already have returned). A response is saturated (infinite) when under 1% of candidate start points are free.
 
-**Table.** For g = 0, R is tabulated for both conventions over 13 solid fractions (0, 0.01, 0.02, 0.04, 0.07, 0.1,
+**Table.** For $`g = 0`$, $`R`$ is tabulated for both conventions over 13 solid fractions (0, 0.01, 0.02, 0.04, 0.07, 0.1,
 0.13, 0.16, 0.2, 0.25, 0.3, 0.35, 0.4) and 17 width ratios (1 to 5 in steps of 0.25), embedded in the library
 (`raylib/raystemresponsetable.h`, generated by `scripts/generate_stem_response_table.cpp`) and interpolated
-bilinearly (`StemResponseTable::response`). For g > 0 the table is over the solid fraction of the exclusion discs,
-φ(1 + g)², and its nodes are simulated when first needed. Examples: R(0.024, 2.3, 0) = 1.046 (300 stems/m² of 1 cm
-stems), R(0.079, 2.3, 0) = 1.157 (1000 stems/m²) and R(0.2, 2.3, 0) = 1.51. With a perfect beam R(φ, 1, 0) is 1.03
+bilinearly (`StemResponseTable::response`). For $`g > 0`$ the table is over the solid fraction of the exclusion discs,
+$`\phi(1+g)^2`$, and its nodes are simulated when first needed. Examples: $`R(0.024, 2.3, 0) = 1.046`$ (300 stems/m² of 1 cm
+stems), $`R(0.079, 2.3, 0) = 1.157`$ (1000 stems/m²) and $`R(0.2, 2.3, 0) = 1.51`$. With a perfect beam $`R(\phi, 1, 0)`$ is 1.03
 and 1.10 at 300 and 1000 stems/m², so about a third of the excess above 1 comes from the footprint widening.
 
-**Accuracy of the table.** Rerunning the simulation with 6 other seeds varied R by 0.2–0.5% (s.d.) at φ ≤ 0.2, and
-by 0.6% (surface) and 0.9% (outline) at φ = 0.25. Interpolation differed from direct simulation by at most 0.2% for
-φ ≤ 0.2, and 0.4% at φ = 0.3. The two conventions agree within 0.2% at φ ≤ 0.1 and 0.7% at φ = 0.2, and diverge
-above: 1.6% at φ = 0.25 (ρ = 3) and 3.8% at φ = 0.3 (ρ = 2.1), surface lower.
+**Accuracy of the table.** Rerunning the simulation with 6 other seeds varied $`R`$ by 0.2–0.5% (s.d.) at $`\phi \le 0.2`$, and
+by 0.6% (surface) and 0.9% (outline) at $`\phi = 0.25`$. Interpolation differed from direct simulation by at most 0.2% for
+$`\phi \le 0.2`$, and 0.4% at $`\phi = 0.3`$. The two conventions agree within 0.2% at $`\phi \le 0.1`$ and 0.7% at $`\phi = 0.2`$, and diverge
+above: 1.6% at $`\phi = 0.25`$ ($`\rho = 3`$) and 3.8% at $`\phi = 0.3`$ ($`\rho = 2.1`$), surface lower.
 
-**Inversion.** For each voxel, Eq. (9) is solved for a given the neighbourhood's m and ρ̄ by bracketing upwards
-from m (doubling, so R < 1 would also be handled) and bisecting (`invertDensityResponse`, `invertStemResponse` in
+**Inversion.** For each voxel, Eq. (9) is solved for $`a`$ given the neighbourhood's $`m`$ and $`\bar\rho`$ by bracketing upwards
+from $`m`$ (doubling, so $`R < 1`$ would also be handled) and bisecting (`invertDensityResponse`, `invertStemResponse` in
 `raylib/raystemmodel.h`/`.cpp`).
 
 **Limits.** The exclusion-disc solid fraction is capped at 0.4 (below the 0.547 random sequential addition limit
-for discs), so N d ≤ 1.6/(π d (1 + g)²): 51 m⁻¹ (5100 stems/m²) for 1 cm stems with no gap. Voxels beyond this are
+for discs), so $`N d \le 1.6/(\pi d (1+g)^2)`$: 51 m⁻¹ (5100 stems/m²) for 1 cm stems with no gap. Voxels beyond this are
 set to the limit, and their number is printed. In the synthetic scans the correction lowered the estimates: the
 uncorrected cell means were 1–6% higher at 30–300 stems/m², 11% at 600 and 18–30% at 1000–1500.
 
 **Minimum gap.** With stems at least one diameter apart, assuming no gap overestimated the cell mean by 34% at 1000
 stems/m², 10% at 300 and 4% at 100 (half a diameter apart: 15%, 5% and 2%), relative to assuming the right gap
-(Table 6). g should be set from field observations of how closely stems pack.
+(Table 6). $`g`$ should be set from field observations of how closely stems pack.
 
-**Determinism.** The simulation uses fixed seeds and its own uniform random numbers from `std::mt19937`, so R, the
+**Determinism.** The simulation uses fixed seeds and its own uniform random numbers from `std::mt19937`, so $`R`$, the
 table and every estimate are the same on any platform, and a tiled run equals a single run (Section 7.7).
 
 ## 6. Cell aggregation
@@ -319,10 +337,12 @@ still has 2 or fewer rays after the top-up is unobserved. In
 practice the unobserved voxels are those no ray reached (below the ground, beyond the scan, or completely hidden),
 or whose neighbours are also nearly empty.
 
-**Outputs.** Over the cell's n_obs observed voxels, with corrected voxel densities a_v and weighted path lengths
-P_v = Σ_i G_i ρ_i L_i:
+**Outputs.** Over the cell's $`n_\mathrm{obs}`$ observed voxels, with corrected voxel densities $`a_v`$ and weighted path lengths
+$`P_v = \sum_i G_i \rho_i L_i`$:
 
-$$\texttt{density} = \frac{1}{n_\mathrm{obs}}\sum_v a_v, \qquad \texttt{pooled\_density} = \frac{\sum_v a_v P_v}{\sum_v P_v}, \qquad \texttt{patchiness\_ratio} = \frac{\texttt{density}}{\texttt{pooled\_density}}. \tag{10}$$
+```math
+\texttt{density} = \frac{1}{n_\mathrm{obs}}\sum_v a_v, \qquad \texttt{pooled\_density} = \frac{\sum_v a_v P_v}{\sum_v P_v}, \qquad \texttt{patchiness\_ratio} = \frac{\texttt{density}}{\texttt{pooled\_density}} \qquad (10)
+```
 
 * `density` (main output): the mean of the observed voxel densities, each voxel weighted equally (by volume), so
   the volume average that a hydrodynamic cell needs. It follows patchy stems, but carries the self-shadowing bias
@@ -335,7 +355,7 @@ $$\texttt{density} = \frac{1}{n_\mathrm{obs}}\sum_v a_v, \qquad \texttt{pooled\_
 * `patchiness_ratio`: in the lowest 0.2 m, 1.03–1.09 for random stems at the default pool (mostly the bias of
   `density`; 0.97–1.02 with `--self_shadow_correction`), 1.6–2.4 for patches and cable roots. Higher up, the
   vertical profile within the cell also raises it (up to 1.17 for random stems at 0.2–0.3 m).
-* `hits` (Σ a_v P_v, the corrected hits), `weighted_path` (Σ P_v) and `observed_fraction` (n_obs over the cell's
+* `hits` ($`\sum_v a_v P_v`$, the corrected hits), `weighted_path` ($`\sum_v P_v`$) and `observed_fraction` ($`n_\mathrm{obs}`$ over the cell's
   voxels). The profile (`--profile`) gives the same per horizontal layer of voxels, with `observed_voxels`,
   `total_voxels` and `mean_hits_per_voxel`.
 * `hybrid_weight` (with `--hybrid` only; a column of `--cells` and `--profile`, and an array of the Zarr store): the
